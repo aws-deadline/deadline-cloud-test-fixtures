@@ -1,335 +1,479 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+from __future__ import annotations
 
 import botocore
+import botocore.client
+import botocore.loaders
 import boto3
+import glob
+import logging
 import os
-import time
+import posixpath
 import pytest
-import json
-from typing import Any, Callable, Generator, Dict, Optional, Type
-from types import TracebackType
+from dataclasses import InitVar, dataclass, field, fields, MISSING
+from typing import Any, Generator
 
-from .deadline_manager import DeadlineManager
+from .deadline.client import DeadlineClient
+from .deadline.resources import (
+    Farm,
+    Fleet,
+    Queue,
+    QueueFleetAssociation,
+)
+from .deadline.worker import (
+    DeadlineWorker,
+    DeadlineWorkerConfiguration,
+    DockerContainerWorker,
+    EC2InstanceWorker,
+    PipInstall,
+)
+from .models import CodeArtifactRepositoryInfo, JobAttachmentSettings, ServiceModel, S3Object
+from .cloudformation import WorkerBootstrapStack
 from .job_attachment_manager import JobAttachmentManager
-from .utils import (
-    generate_worker_role_cfn_template,
-    generate_boostrap_worker_role_cfn_template,
-    generate_boostrap_instance_profile_cfn_template,
-    generate_queue_session_role,
-    generate_job_attachments_bucket,
-    generate_job_attachments_bucket_policy,
-)
 
-from .constants import (
-    DEADLINE_WORKER_ROLE,
-    DEADLINE_WORKER_BOOTSTRAP_ROLE,
-    DEADLINE_WORKER_BOOSTRAP_INSTANCE_PROFILE_NAME,
-    DEADLINE_QUEUE_SESSION_ROLE,
-    DEADLINE_SERVICE_MODEL_BUCKET,
-    CODEARTIFACT_DOMAIN,
-    CODEARTIFACT_ACCOUNT_ID,
-    CODEARTIFACT_REPOSITORY,
-    JOB_ATTACHMENTS_BUCKET_NAME,
-    JOB_ATTACHMENTS_BUCKET_RESOURCE,
-    JOB_ATTACHMENTS_BUCKET_POLICY_RESOURCE,
-    BOOTSTRAP_CLOUDFORMATION_STACK_NAME,
-    STAGE,
-)
-
-AMI_ID = os.environ.get("AMI_ID", "")
-SUBNET_ID = os.environ.get("SUBNET_ID", "")
-SECURITY_GROUP_ID = os.environ.get("SECURITY_GROUP_ID", "")
+LOG = logging.getLogger(__name__)
 
 
-@pytest.fixture(scope="session")
-def stage() -> str:
-    if os.getenv("LOCAL_DEVELOPMENT", "false").lower() == "true":
-        return "dev"
-    else:
-        return os.environ["STAGE"]
+@dataclass(frozen=True)
+class BootstrapResources:
+    bootstrap_bucket_name: str
+    worker_role_arn: str
+    session_role_arn: str | None = None
+    worker_instance_profile_name: str | None = None
 
+    job_attachments: JobAttachmentSettings | None = field(init=False, default=None)
+    job_attachments_bucket_name: InitVar[str | None] = None
+    job_attachments_root_prefix: InitVar[str | None] = None
 
-@pytest.fixture(scope="session")
-def account_id() -> str:
-    return os.environ["SERVICE_ACCOUNT_ID"]
-
-
-# Boto client fixtures
-@pytest.fixture(scope="session")
-def session() -> boto3.Session:
-    return boto3.Session()
-
-
-@pytest.fixture(scope="session")
-def iam_client(session: boto3.Session) -> botocore.client.BaseClient:
-    return session.client("iam")
-
-
-@pytest.fixture(scope="session")
-def ec2_client(session: boto3.Session) -> botocore.client.BaseClient:
-    return session.client("ec2")
-
-
-@pytest.fixture(scope="session")
-def ssm_client(session: boto3.Session) -> botocore.client.BaseClient:
-    return session.client("ssm")
-
-
-@pytest.fixture(scope="session")
-def cfn_client(session: boto3.Session) -> botocore.client.BaseClient:
-    return session.client("cloudformation")
-
-
-# Bootstrap persistent resources
-@pytest.fixture(
-    scope="session", autouse=os.environ.get("SKIP_BOOTSTRAP_TEST_RESOURCES", "False") != "True"
-)
-def bootstrap_test_resources(cfn_client: botocore.client.BaseClient) -> None:
-    # All required resources are created using CloudFormation stack
-    cfn_template: dict[str, Any] = {
-        "AWSTemplateFormatVersion": "2010-09-09",
-        "Description": "Stack created by deadline-cloud-test-fixtures",
-        "Resources": {
-            # A role for use by the Worker Agent after being bootstrapped
-            DEADLINE_WORKER_ROLE: generate_worker_role_cfn_template(),
-            DEADLINE_WORKER_BOOTSTRAP_ROLE: generate_boostrap_worker_role_cfn_template(),
-            DEADLINE_QUEUE_SESSION_ROLE: generate_queue_session_role(),
-            DEADLINE_WORKER_BOOSTRAP_INSTANCE_PROFILE_NAME: generate_boostrap_instance_profile_cfn_template(),
-            JOB_ATTACHMENTS_BUCKET_RESOURCE: generate_job_attachments_bucket(),
-            JOB_ATTACHMENTS_BUCKET_POLICY_RESOURCE: generate_job_attachments_bucket_policy(),
-        },
-    }
-    stack_name = BOOTSTRAP_CLOUDFORMATION_STACK_NAME
-    update_or_create_cfn_stack(cfn_client, stack_name, cfn_template)
-
-
-# create or update bootstrap
-def update_or_create_cfn_stack(
-    cfn_client: botocore.client.BaseClient, stack_name: str, cfn_template: Dict[str, Any]
-) -> None:
-    try:
-        cfn_client.update_stack(
-            StackName=stack_name,
-            TemplateBody=json.dumps(cfn_template),
-            Capabilities=["CAPABILITY_NAMED_IAM"],
-        )
-        waiter = cfn_client.get_waiter("stack_update_complete")
-        waiter.wait(StackName=stack_name)
-    except cfn_client.exceptions.ClientError as e:
-        if e.response["Error"]["Message"] != "No updates are to be performed.":
-            cfn_client.create_stack(
-                StackName=stack_name,
-                TemplateBody=json.dumps(cfn_template),
-                Capabilities=["CAPABILITY_NAMED_IAM"],
-                OnFailure="DELETE",
-                EnableTerminationProtection=False,
+    def __post_init__(
+        self,
+        job_attachments_bucket_name: str | None,
+        job_attachments_root_prefix: str | None,
+    ) -> None:
+        if job_attachments_bucket_name or job_attachments_root_prefix:
+            assert (
+                job_attachments_bucket_name and job_attachments_root_prefix
+            ), "Cannot provide partial Job Attachments settings, both bucket name and root prefix are required"
+            object.__setattr__(
+                self,
+                "job_attachments",
+                JobAttachmentSettings(
+                    bucket_name=job_attachments_bucket_name,
+                    root_prefix=job_attachments_root_prefix,
+                ),
             )
-            waiter = cfn_client.get_waiter("stack_create_complete")
-            waiter.wait(StackName=stack_name)
 
 
-@pytest.fixture(scope="session")
-def deadline_manager_fixture():
-    deadline_manager_fixture = DeadlineManager(should_add_deadline_models=True)
-    yield deadline_manager_fixture
+@dataclass(frozen=True)
+class DeadlineResources:
+    farm: Farm = field(init=False)
+    queue: Queue = field(init=False)
+    fleet: Fleet = field(init=False)
 
+    farm_id: InitVar[str]
+    queue_id: InitVar[str]
+    fleet_id: InitVar[str]
 
-# get the worker role arn
-@pytest.fixture(scope="session")
-def worker_role_arn(iam_client: botocore.client.BaseClient) -> str:
-    response = iam_client.get_role(RoleName=DEADLINE_WORKER_ROLE)
-    return response["Role"]["Arn"]
+    farm_kms_key_id: str | None = None
+    job_attachments_bucket: str | None = None
 
-
-@pytest.fixture(scope="session")
-def deadline_scaffolding(
-    deadline_manager_fixture: DeadlineManager, worker_role_arn: str
-) -> Generator[Any, None, None]:
-    deadline_manager_fixture.create_scaffolding(worker_role_arn, JOB_ATTACHMENTS_BUCKET_NAME)
-
-    yield deadline_manager_fixture
-
-    deadline_manager_fixture.cleanup_scaffolding()
-
-
-@pytest.fixture(scope="session")
-def launch_instance(ec2_client: botocore.client.BaseClient) -> Generator[Any, None, None]:
-    with _InstanceLauncher(
-        ec2_client,
-        AMI_ID,
-        SUBNET_ID,
-        SECURITY_GROUP_ID,
-        DEADLINE_WORKER_BOOSTRAP_INSTANCE_PROFILE_NAME,
-    ) as instance_id:
-        yield instance_id
-
-
-@pytest.fixture(scope="session")
-def create_worker_agent(
-    deadline_scaffolding, launch_instance: str, send_ssm_command: Callable
-) -> Generator[Any, None, None]:
-    def configure_worker_agent_func() -> Dict:
-        """Creates a Deadline Farm, starts an instance and configures and starts a Worker Agent."""
-        assert deadline_scaffolding
-        assert launch_instance
-
-        configuration_command_response = send_ssm_command(
-            launch_instance,
-            (
-                f"adduser -r -m agentuser && \n"
-                f"adduser -r -m jobuser && \n"
-                f"usermod -a -G jobuser agentuser && \n"
-                f"chmod 770 /home/jobuser && \n"
-                f"touch /etc/sudoers.d/deadline-worker-job-user && \n"
-                f'echo "agentuser ALL=(jobuser) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/deadline-worker-job-user && \n'
-                f"python3.9 -m venv /opt/deadline/worker && \n"
-                f"source /opt/deadline/worker/bin/activate && \n"
-                f"pip install --upgrade pip && \n"
-                f"touch /opt/deadline/worker/pip.conf && \n"
-                # TODO: Remove when pypi is available
-                f"aws codeartifact login --tool pip --domain {CODEARTIFACT_DOMAIN} --domain-owner {CODEARTIFACT_ACCOUNT_ID} --repository {CODEARTIFACT_REPOSITORY} && \n"
-                f"aws s3 cp s3://{DEADLINE_SERVICE_MODEL_BUCKET}/service-2.json /tmp/deadline-beta-2020-08-21.json && \n"
-                f"chmod +r /tmp/deadline-beta-2020-08-21.json && \n"
-                f"sudo -u agentuser aws configure add-model  --service-model file:///tmp/deadline-beta-2020-08-21.json --service-name deadline && \n"
-                f"mkdir /var/lib/deadline /var/log/amazon/deadline/ && \n"
-                f"chown agentuser:agentuser /var/lib/deadline /var/log/amazon/deadline/ && \n"
-                f"pip install deadline-worker-agent && \n"
-                f"sudo -u agentuser /opt/deadline/worker/bin/deadline_worker_agent --help"
-            ),
-        )
-
-        return configuration_command_response
-
-    def start_worker_agent_func() -> Dict:
-        start_command_response = send_ssm_command(
-            launch_instance,
-            (
-                f"nohup sudo -E AWS_DEFAULT_REGION=us-west-2 -u agentuser /opt/deadline/worker/bin/deadline_worker_agent --farm-id {deadline_scaffolding.farm_id} --fleet-id {deadline_scaffolding.fleet_id} --allow-instance-profile >/dev/null 2>&1 &"
-            ),
-        )
-
-        return start_command_response
-
-    configuration_result = configure_worker_agent_func()
-
-    assert configuration_result["ResponseCode"] == 0
-
-    run_worker = start_worker_agent_func()
-
-    assert run_worker["ResponseCode"] == 0
-
-    yield run_worker
-
-
-@pytest.fixture(scope="session")
-def send_ssm_command(ssm_client: botocore.client.BaseClient) -> Callable:
-    def send_ssm_command_func(instance_id: str, command: str) -> Dict:
-        """Helper function to send single commands via SSM to a shell on a launched EC2 instance. Once the command has fully
-        finished the result of the invocation is returned.
-        """
-        ssm_waiter = ssm_client.get_waiter("command_executed")
-
-        # To successfully send an SSM Command to an instance the instance must:
-        #  1) Be in RUNNING state;
-        #  2) Have the AWS Systems Manager (SSM) Agent running; and
-        #  3) Have had enough time for the SSM Agent to connect to System's Manager
-        #
-        # If we send an SSM command then we will get an InvalidInstanceId error
-        # if the instance isn't in that state.
-        NUM_RETRIES = 10
-        SLEEP_INTERVAL_S = 5
-        for i in range(0, NUM_RETRIES):
-            try:
-                send_command_response = ssm_client.send_command(
-                    InstanceIds=[instance_id],
-                    DocumentName="AWS-RunShellScript",
-                    Parameters={"commands": [command]},
-                )
-                # Successfully sent. Bail out of the loop.
-                break
-            except botocore.exceptions.ClientError as error:
-                error_code = error.response["Error"]["Code"]
-                if error_code == "InvalidInstanceId" and i < NUM_RETRIES - 1:
-                    time.sleep(SLEEP_INTERVAL_S)
-                    continue
-                raise
-
-        command_id = send_command_response["Command"]["CommandId"]
-
-        ssm_waiter.wait(InstanceId=instance_id, CommandId=command_id)
-        ssm_command_result = ssm_client.get_command_invocation(
-            InstanceId=instance_id, CommandId=command_id
-        )
-
-        return ssm_command_result
-
-    return send_ssm_command_func
-
-
-@pytest.fixture(scope="session")
-def job_attachment_manager_fixture(stage: str, account_id: str):
-    job_attachment_manager = JobAttachmentManager(stage, account_id)
-    yield job_attachment_manager
-
-
-@pytest.fixture(scope="session")
-def deploy_job_attachment_resources(job_attachment_manager_fixture: JobAttachmentManager):
-    job_attachment_manager_fixture.deploy_resources()
-    yield job_attachment_manager_fixture
-    job_attachment_manager_fixture.cleanup_resources()
-
-
-class _InstanceLauncher:
-    ami_id: str
-    subnet_id: str
-    security_group_id: str
-    instance_profile_name: str
-    instance_id: str
-    ec2_client: botocore.client.BaseClient
-
-    def __init__(
+    def __post_init__(
         self,
-        ec2_client: botocore.client.BaseClient,
-        ami_id: str,
-        subnet_id: str,
-        security_group_id: str,
-        instance_profile_name: str,
+        farm_id: str,
+        queue_id: str,
+        fleet_id: str,
     ) -> None:
-        self.ec2_client = ec2_client
-        self.ami_id = ami_id
-        self.subnet_id = subnet_id
-        self.security_group_id = security_group_id
-        self.instance_profile_name = instance_profile_name
+        object.__setattr__(self, "farm", Farm(id=farm_id))
+        object.__setattr__(self, "queue", Queue(id=queue_id, farm=self.farm))
+        object.__setattr__(self, "fleet", Fleet(id=fleet_id, farm=self.farm))
 
-    def __enter__(self) -> str:
-        instance_running_waiter = self.ec2_client.get_waiter("instance_status_ok")
 
-        run_instance_response = self.ec2_client.run_instances(
-            MinCount=1,
-            MaxCount=1,
-            ImageId=self.ami_id,
-            InstanceType="t3.micro",
-            IamInstanceProfile={"Name": self.instance_profile_name},
-            SubnetId=self.subnet_id,
-            SecurityGroupIds=[self.security_group_id],
-            MetadataOptions={"HttpTokens": "required", "HttpEndpoint": "enabled"},
-            TagSpecifications=[
-                {
-                    "ResourceType": "instance",
-                    "Tags": [{"Key": "InstanceIdentification", "Value": f"TestScaffolding{STAGE}"}],
-                }
-            ],
+@pytest.fixture(scope="session")
+def deadline_client() -> DeadlineClient:
+    endpoint_url = os.getenv("DEADLINE_ENDPOINT")
+    if endpoint_url:
+        LOG.info(f"Using Amazon Deadline Cloud endpoint: {endpoint_url}")
+
+    return DeadlineClient(boto3.client("deadline", endpoint_url=endpoint_url))
+
+
+@pytest.fixture(scope="session")
+def codeartifact() -> CodeArtifactRepositoryInfo:
+    """
+    Gets the information for the CodeArtifact repository to use for Python dependencies.
+
+    Environment Variables:
+        CODEARTIFACT_REGION: The region the CodeArtifact repository is in
+        CODEARTIFACT_DOMAIN: The domain of the CodeArtifact repository
+        CODEARTIFACT_ACCOUNT_ID: The AWS account ID which owns the domain
+        CODEARTIFACT_REPOSITORY: The name of the CodeArtifact repository
+
+    Returns:
+        CodeArtifactRepositoryInfo: Info about the CodeArtifact repository
+    """
+    return CodeArtifactRepositoryInfo(
+        region=os.environ["CODEARTIFACT_REGION"],
+        domain=os.environ["CODEARTIFACT_DOMAIN"],
+        domain_owner=os.environ["CODEARTIFACT_ACCOUNT_ID"],
+        repository=os.environ["CODEARTIFACT_REPOSITORY"],
+    )
+
+
+@pytest.fixture(scope="session")
+def service_model_s3_object() -> S3Object | None:
+    service_model_s3_uri = os.getenv("DEADLINE_SERVICE_MODEL_S3_URI")
+    return S3Object.from_uri(service_model_s3_uri) if service_model_s3_uri else None
+
+
+@pytest.fixture(scope="session")
+def bootstrap_resources(request: pytest.FixtureRequest) -> BootstrapResources:
+    """
+    Gets Bootstrap resources required for running tests.
+
+    Environment Variables:
+        SERVICE_ACCOUNT_ID: ID of the AWS account to deploy the bootstrap stack into.
+            This option is ignored if BYO_BOOTSTRAP is set to "true"
+        CREDENTIAL_VENDING_PRINCIPAL: The credential vending service principal to use.
+            Defaults to credential-vending.deadline-closed-beta.amazonaws.com
+            This option is ignored if BYO_BOOTSTRAP is set to "true"
+        BYO_BOOTSTRAP: Whether the bootstrap stack deployment should be skipped.
+            If this is set to "true", environment values must be specified to fill the resources.
+        <BOOTSTRAP_RESOURCE>: Corresponds to an field in the BootstrapResources class with an uppercase name.
+            e.g. WORKER_ROLE_ARN -> BootstrapResources.worker_role_arn
+
+    Returns:
+        BootstrapResources: The bootstrap resources used for tests
+    """
+
+    if os.environ.get("BYO_BOOTSTRAP", "false").lower() == "true":
+        kwargs: dict[str, Any] = {}
+
+        all_fields = fields(BootstrapResources)
+        for f in all_fields:
+            env_var = f.name.upper()
+            if env_var in os.environ:
+                kwargs[f.name] = os.environ[env_var]
+
+        required_fields = [f for f in all_fields if (MISSING == f.default == f.default_factory)]
+        assert all([rf.name in kwargs for rf in required_fields]), (
+            "Not all bootstrap resources have been fulfilled via environment variables. Expected "
+            + f"values for {[f.name.upper() for f in required_fields]}, but got {kwargs}"
+        )
+        LOG.info(
+            f"All bootstrap resources have been fulfilled via environment variables. Using {kwargs}"
+        )
+        return BootstrapResources(**kwargs)
+    else:
+        account = os.environ["SERVICE_ACCOUNT_ID"]
+        codeartifact: CodeArtifactRepositoryInfo = request.getfixturevalue("codeartifact")
+        service_model_s3_object: S3Object | None = request.getfixturevalue(
+            "service_model_s3_object"
+        )
+        crednetial_vending_service_principal = os.getenv(
+            "CREDENTIAL_VENDING_PRINCIPAL",
+            "credential-vending.deadline-closed-beta.amazonaws.com",
         )
 
-        self.instance_id = run_instance_response["Instances"][0]["InstanceId"]
+        stack_name = "DeadlineScaffoldingWorkerBootstrapStack"
+        LOG.info(f"Deploying bootstrap stack {stack_name}")
+        stack = WorkerBootstrapStack(
+            name=stack_name,
+            codeartifact=codeartifact,
+            account=account,
+            credential_vending_service_principal=crednetial_vending_service_principal,
+            service_model_s3_object_arn=service_model_s3_object.arn
+            if service_model_s3_object
+            else None,
+        )
+        stack.deploy(cfn_client=boto3.client("cloudformation"))
 
-        instance_running_waiter.wait(InstanceIds=[self.instance_id])
-        return self.instance_id
+        return BootstrapResources(
+            bootstrap_bucket_name=stack.bootstrap_bucket.physical_name,
+            worker_role_arn=stack.worker_role.format_arn(account=account),
+            session_role_arn=stack.session_role.format_arn(account=account),
+            worker_instance_profile_name=stack.worker_instance_profile.physical_name,
+            job_attachments_bucket_name=stack.job_attachments_bucket.physical_name,
+            job_attachments_root_prefix="root",
+        )
 
-    def __exit__(
-        self,
-        exc_type: Optional[Type[BaseException]],
-        exc_value: Optional[BaseException],
-        traceback: Optional[TracebackType],
-    ) -> None:
-        self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
+
+@pytest.fixture(scope="session")
+def deadline_resources(
+    request: pytest.FixtureRequest, deadline_client: DeadlineClient
+) -> Generator[DeadlineResources, None, None]:
+    """
+    Gets Deadline resources required for running tests.
+
+    Environment Variables:
+        BYO_DEADLINE: Whether the Deadline resource deployment should be skipped.
+            If this is set to "true", environment values must be specified to fill the resources.
+        <DEADLINE_RESOURCE>: Corresponds to an field in the DeadlineResources class with an uppercase name.
+            e.g. FARM_ID -> DeadlineResources.farm_id
+
+    Returns:
+        DeadlineResources: The Deadline resources used for tests
+    """
+    if os.getenv("BYO_DEADLINE", "false").lower() == "true":
+        kwargs: dict[str, Any] = {}
+
+        all_fields = fields(DeadlineResources)
+        for f in all_fields:
+            env_var = f.name.upper()
+            if env_var in os.environ:
+                kwargs[f.name] = os.environ[env_var]
+
+        required_fields = [f for f in all_fields if (MISSING == f.default == f.default_factory)]
+        assert all([rf.name in kwargs for rf in required_fields]), (
+            "Not all Deadline resources have been fulfilled via environment variables. Expected "
+            + f"values for {[f.name.upper() for f in required_fields]}, but got {kwargs}"
+        )
+        LOG.info(
+            f"All Deadline resources have been fulfilled via environment variables. Using {kwargs}"
+        )
+        yield DeadlineResources(**kwargs)
+    else:
+        LOG.info("Deploying Deadline resources")
+        bootstrap_resources: BootstrapResources = request.getfixturevalue("bootstrap_resources")
+        farm = Farm.create(
+            client=deadline_client,
+            display_name="test-scaffolding-farm",
+        )
+        queue = Queue.create(
+            client=deadline_client,
+            display_name="test-scaffolding-queue",
+            farm=farm,
+            job_attachments=bootstrap_resources.job_attachments,
+            role_arn=bootstrap_resources.session_role_arn,
+        )
+        fleet = Fleet.create(
+            client=deadline_client,
+            display_name="test-scaffolding-fleet",
+            farm=farm,
+            configuration={
+                "customerManaged": {
+                    "autoScalingConfiguration": {
+                        "mode": "NO_SCALING",
+                        "maxFleetSize": 1,
+                    },
+                    "workerRequirements": {
+                        "vCpuCount": {"min": 1},
+                        "memoryMiB": {"min": 1024},
+                        "osFamily": "linux",
+                        "cpuArchitectureType": "x86_64",
+                    },
+                },
+            },
+            role_arn=bootstrap_resources.worker_role_arn,
+        )
+        qfa = QueueFleetAssociation.create(
+            client=deadline_client,
+            farm=farm,
+            queue=queue,
+            fleet=fleet,
+        )
+
+        yield DeadlineResources(
+            farm_id=farm.id,
+            queue_id=queue.id,
+            fleet_id=fleet.id,
+            job_attachments_bucket=bootstrap_resources.job_attachments.bucket_name
+            if bootstrap_resources.job_attachments
+            else None,
+        )
+
+        qfa.delete(client=deadline_client)
+        fleet.delete(client=deadline_client)
+        queue.delete(client=deadline_client)
+        farm.delete(client=deadline_client)
+
+
+@pytest.fixture(scope="session")
+def worker(
+    request: pytest.FixtureRequest,
+    deadline_client: DeadlineClient,
+    deadline_resources: DeadlineResources,
+    codeartifact: CodeArtifactRepositoryInfo,
+    service_model_s3_object: S3Object | None,
+) -> Generator[DeadlineWorker, None, None]:
+    """
+    Gets a DeadlineWorker for use in tests.
+
+    Environment Variables:
+        SUBNET_ID: The subnet ID to deploy the EC2 worker into.
+            This is required for EC2 workers. Does not apply if USE_DOCKER_WORKER is true.
+        SECURITY_GROUP_ID: The security group ID to deploy the EC2 worker into.
+            This is required for EC2 workers. Does not apply if USE_DOCKER_WORKER is true.
+        AMI_ID: The AMI ID to use for the Worker agent.
+            Defaults to the latest AL2023 AMI.
+            Does not apply if USE_DOCKER_WORKER is true.
+        WORKER_REGION: The AWS region to configure the worker for
+            Falls back to AWS_DEFAULT_REGION, then defaults to us-west-2
+        WORKER_POSIX_USER: The POSIX user to configure the worker for
+            Defaults to "deadline-worker"
+        WORKER_POSIX_SHARED_GROUP: The shared POSIX group to configure the worker user and job user with
+            Defaults to "shared-group"
+        WORKER_AGENT_WHL_PATH: Path to the Worker agent wheel file to use.
+        WORKER_AGENT_REQUIREMENT_SPECIFIER: PEP 508 requirement specifier for the Worker agent package.
+            If WORKER_AGENT_WHL_PATH is provided, this option is ignored.
+        LOCAL_MODEL_PATH: Path to a local Deadline model file to use for API calls.
+            If DEADLINE_SERVICE_MODEL_S3_URI was provided, this option is ignored.
+        USE_DOCKER_WORKER: If set to "true", this fixture will create a Worker that runs in a local Docker container instead of an EC2 instance.
+
+    Returns:
+        DeadlineWorker: Instance of the DeadlineWorker class that can be used to interact with the Worker.
+    """
+    file_mappings: list[tuple[str, str]] = []
+
+    # Prepare the Worker agent Python package
+    worker_agent_whl_path = os.getenv("WORKER_AGENT_WHL_PATH")
+    if worker_agent_whl_path:
+        LOG.info(f"Using Worker agent whl file: {worker_agent_whl_path}")
+        resolved_whl_paths = glob.glob(worker_agent_whl_path)
+        assert (
+            len(resolved_whl_paths) == 1
+        ), f"Expected exactly one Worker agent whl path, but got {resolved_whl_paths} (from pattern {worker_agent_whl_path})"
+        resolved_whl_path = resolved_whl_paths[0]
+
+        dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
+        file_mappings = [(resolved_whl_path, dest_path)]
+
+        LOG.info(f"The whl file will be copied to {dest_path} on the Worker environment")
+        worker_agent_requirement_specifier = dest_path
+    else:
+        worker_agent_requirement_specifier = os.getenv(
+            "WORKER_AGENT_REQUIREMENT_SPECIFIER",
+            "deadline-cloud-worker-agent",
+        )
+        LOG.info(f"Using Worker agent package {worker_agent_requirement_specifier}")
+
+    # Prepare the service model
+    service_model: ServiceModel
+    if service_model_s3_object:
+        LOG.info(f"Using Deadline model from S3: {service_model_s3_object.uri}")
+        service_model = ServiceModel.from_s3(
+            local_filename=posixpath.join("/tmp", "deadline-cloud-service-model.json"),
+            object=service_model_s3_object,
+            service_name="deadline",
+        )
+    else:
+        local_model_path = os.getenv("LOCAL_MODEL_PATH")
+        if local_model_path:
+            LOG.info(
+                f"Using Deadline model from local path provided via env var: {local_model_path}"
+            )
+        else:
+            local_model_path = _find_latest_service_model_file("deadline")
+            LOG.info(f"Using Deadline model installed at: {local_model_path}")
+        dst_path = posixpath.join("/tmp", "deadline-cloud-service-model.json")
+        service_model = ServiceModel.from_local_file(
+            local_file_path=dst_path, service_name="deadline"
+        )
+        file_mappings.append((local_model_path, dst_path))
+
+    configuration = DeadlineWorkerConfiguration(
+        farm_id=deadline_resources.farm.id,
+        fleet_id=deadline_resources.fleet.id,
+        region=os.getenv("WORKER_REGION", os.getenv("AWS_DEFAULT_REGION", "us-west-2")),
+        user=os.getenv("WORKER_POSIX_USER", "deadline-worker"),
+        group=os.getenv("WORKER_POSIX_SHARED_GROUP", "shared-group"),
+        allow_shutdown=True,
+        worker_agent_install=PipInstall(
+            requirement_specifiers=[worker_agent_requirement_specifier],
+            codeartifact=codeartifact,
+        ),
+        service_model=service_model,
+        file_mappings=file_mappings or None,
+    )
+
+    worker: DeadlineWorker
+    if os.environ.get("USE_DOCKER_WORKER", False):
+        LOG.info("Creating Docker worker")
+        worker = DockerContainerWorker(
+            configuration=configuration,
+        )
+    else:
+        LOG.info("Creating EC2 worker")
+        ami_id = os.getenv("AMI_ID")
+        subnet_id = os.getenv("SUBNET_ID")
+        security_group_id = os.getenv("SECURITY_GROUP_ID")
+        assert subnet_id, "SUBNET_ID is required when deploying an EC2 worker"
+        assert security_group_id, "SECURITY_GROUP_ID is required when deploying an EC2 worker"
+
+        bootstrap_resources: BootstrapResources = request.getfixturevalue("bootstrap_resources")
+        assert (
+            bootstrap_resources.worker_instance_profile_name
+        ), "Worker instance profile is required when deploying an EC2 worker"
+
+        ec2_client = boto3.client("ec2")
+        s3_client = boto3.client("s3")
+        ssm_client = boto3.client("ssm")
+
+        worker = EC2InstanceWorker(
+            ec2_client=ec2_client,
+            deadline_client=deadline_client,
+            s3_client=s3_client,
+            bootstrap_bucket_name=bootstrap_resources.bootstrap_bucket_name,
+            ssm_client=ssm_client,
+            override_ami_id=ami_id,
+            subnet_id=subnet_id,
+            security_group_id=security_group_id,
+            instance_profile_name=bootstrap_resources.worker_instance_profile_name,
+            configuration=configuration,
+        )
+
+    def stop_worker():
+        try:
+            worker.stop()
+        except Exception as e:
+            LOG.exception(f"Error while stopping worker: {e}")
+            LOG.error(
+                "Failed to stop worker. Resources may be left over that need to be cleaned up manually."
+            )
+            raise
+
+    try:
+        worker.start()
+    except Exception as e:
+        LOG.exception(f"Failed to start worker: {e}")
+        if os.getenv("KEEP_WORKER_AFTER_FAILURE", "false").lower() != "true":
+            LOG.info("Stopping worker because it failed to start")
+            stop_worker()
+        raise
+
+    yield worker
+
+    stop_worker()
+
+
+@pytest.fixture(scope="session")
+def deploy_job_attachment_resources() -> Generator[JobAttachmentManager, None, None]:
+    """
+    Deploys Job Attachments resources for integration tests
+
+    Environment Variables:
+        SERVICE_ACCOUNT_ID: The account ID the resources will be deployed to
+        STAGE: The stage these resources are being deployed to
+            Defaults to "dev"
+
+    Returns:
+        JobAttachmentManager: Class to manage Job Attachments resources
+    """
+    manager = JobAttachmentManager(
+        s3_resource=boto3.resource("s3"),
+        cfn_client=boto3.client("cloudformation"),
+        deadline_client=DeadlineClient(boto3.client("deadline")),
+        account_id=os.environ["SERVICE_ACCOUNT_ID"],
+        stage=os.getenv("STAGE", "dev"),
+    )
+    manager.deploy_resources()
+    yield manager
+    manager.cleanup_resources()
+
+
+def _find_latest_service_model_file(service_name: str) -> str:
+    loader = botocore.loaders.Loader(include_default_search_paths=True)
+    full_name = os.path.join(
+        service_name, loader.determine_latest_version(service_name, "service-2"), "service-2"
+    )
+    _, service_model_path = loader.load_data_with_path(full_name)
+    return f"{service_model_path}.json"

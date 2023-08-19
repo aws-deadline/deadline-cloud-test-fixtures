@@ -1,17 +1,66 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-from .deadline_manager import DeadlineManager, DeadlineClient
-from .deadline_stub import StubDeadlineClient
-from .fixtures import deadline_manager_fixture, deadline_scaffolding, create_worker_agent
+from .deadline import (
+    CommandResult,
+    DeadlineClient,
+    DeadlineWorker,
+    DeadlineWorkerConfiguration,
+    DockerContainerWorker,
+    EC2InstanceWorker,
+    Job,
+    Farm,
+    Fleet,
+    PipInstall,
+    Queue,
+    QueueFleetAssociation,
+    TaskStatus,
+)
+from .fixtures import (
+    BootstrapResources,
+    DeadlineResources,
+    bootstrap_resources,
+    deadline_client,
+    deadline_resources,
+    deploy_job_attachment_resources,
+    worker,
+)
 from .job_attachment_manager import JobAttachmentManager
+from .models import (
+    CodeArtifactRepositoryInfo,
+    JobAttachmentSettings,
+    S3Object,
+    ServiceModel,
+)
 from ._version import __version__ as version  # noqa
 
 __all__ = [
-    "DeadlineManager",
+    "BootstrapResources",
+    "CodeArtifactRepositoryInfo",
+    "CommandResult",
+    "DeadlineResources",
     "DeadlineClient",
+    "DeadlineScaffolding",
+    "DeadlineSubmitter",
+    "DeadlineJob",
+    "DeadlineWorker",
+    "DeadlineWorkerConfiguration",
+    "DockerContainerWorker",
+    "EC2InstanceWorker",
+    "Farm",
+    "Fleet",
+    "Job",
+    "JobAttachmentSettings",
     "JobAttachmentManager",
-    "deadline_manager_fixture",
-    "deadline_scaffolding",
+    "PipInstall",
+    "S3Object",
+    "ServiceModel",
     "StubDeadlineClient",
+    "Queue",
+    "QueueFleetAssociation",
+    "TaskStatus",
+    "bootstrap_resources",
+    "deadline_client",
+    "deadline_resources",
+    "deploy_job_attachment_resources",
     "version",
-    "create_worker_agent",
+    "worker",
 ]

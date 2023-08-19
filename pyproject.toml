@@ -8,7 +8,7 @@ dynamic = ["version"]
 requires-python = ">=3.7"
 
 dependencies = [
-    "boto3 ~= 1.26",
+  "boto3 ~= 1.26",
 ]
 
 [project.entry-points.pytest11]
@@ -58,9 +58,13 @@ files = [ "src/**/*.py" ]
 
 [[tool.mypy.overrides]]
 module = [
-    "boto3",
-    "botocore.*"
+  "boto3",
+  "botocore.*"
 ]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "moto"
 ignore_missing_imports = true
 
 [tool.ruff]
@@ -80,26 +84,31 @@ line-length = 100
 [tool.pytest.ini_options]
 xfail_strict = true
 addopts = [
-    "--durations=5",
-    "--cov=src/deadline_test_scaffolding",
-    "--color=yes",
-    "--cov-report=html:build/coverage",
-    "--cov-report=xml:build/coverage/coverage.xml",
-    "--cov-report=term-missing",
-    "--numprocesses=auto",
+  "--durations=5",
+  "--cov=src/deadline_test_scaffolding",
+  "--color=yes",
+  "--cov-report=html:build/coverage",
+  "--cov-report=xml:build/coverage/coverage.xml",
+  "--cov-report=term-missing",
+  "--numprocesses=auto",
 ]
 testpaths = [ "test" ]
 looponfailroots = [
-    "src",
-    "test",
+  "src",
+  "test",
 ]
 # looponfailroots is deprecated, this removes the deprecation from the test output
 filterwarnings = [
-    "ignore::DeprecationWarning"
+  "ignore::DeprecationWarning"
 ]
 
 [tool.coverage.run]
 source_pkgs = [ "deadline_test_scaffolding" ]
+omit = [
+  "models.py",
+  "fixtures.py",
+  "deadline/stubs.py",
+]
 
 
 [tool.coverage.paths]

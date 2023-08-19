@@ -1,13 +1,15 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-from datetime import datetime
-from unittest import mock
+from typing import Generator
+from unittest.mock import MagicMock, patch
 
+import boto3
 import pytest
 from botocore.exceptions import ClientError, WaiterError
-from botocore.stub import ANY, Stubber
+from moto import mock_s3
 
-from deadline_test_scaffolding import JobAttachmentManager
+from deadline_test_scaffolding import job_attachment_manager as jam_module
+from deadline_test_scaffolding import DeadlineClient, JobAttachmentManager
 
 
 class TestJobAttachmentManager:
@@ -16,359 +18,173 @@ class TestJobAttachmentManager:
     """
 
     @pytest.fixture(autouse=True)
-    def setup_test(self, mock_get_deadline_models, boto_config):
-        with mock.patch("deadline_test_scaffolding.job_attachment_manager.DeadlineManager"):
-            self.job_attachment_manager = JobAttachmentManager(
-                stage="test", account_id="123456789101"
-            )
-            yield
+    def mock_farm_cls(self) -> Generator[MagicMock, None, None]:
+        with patch.object(jam_module, "Farm") as mock:
+            yield mock
 
-    def test_deploy_resources(self):
-        """
-        Test that during the normal flow that the upgrade stack boto call is made.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.stack.meta.client) as stubber:
-            stubber.add_response(
-                "update_stack",
-                {
-                    "StackId": "arn:aws:cloudformation:us-west-2:123456789101:stack/"
-                    "JobAttachmentIntegTest/abcdefgh-1234-ijkl-5678-mnopqrstuvwx"
-                },
-                expected_params={
-                    "StackName": "JobAttachmentIntegTest",
-                    "TemplateBody": ANY,
-                    "Parameters": [
-                        {
-                            "ParameterKey": "BucketName",
-                            "ParameterValue": "job-attachment-integ-test-test-123456789101",
-                        },
-                    ],
-                },
-            )
-            stubber.add_response(
-                "describe_stacks",
-                {
-                    "Stacks": [
-                        {
-                            "StackName": "JobAttachmentIntegTest",
-                            "CreationTime": datetime(2015, 1, 1),
-                            "StackStatus": "UPDATE_COMPLETE",
-                        },
-                    ],
-                },
-                expected_params={
-                    "StackName": "JobAttachmentIntegTest",
-                },
-            )
-            self.job_attachment_manager.deploy_resources()
+    @pytest.fixture(autouse=True)
+    def mock_queue_cls(self) -> Generator[MagicMock, None, None]:
+        with patch.object(jam_module, "Queue") as mock:
+            yield mock
 
-            stubber.assert_no_pending_responses()
+    @pytest.fixture(autouse=True)
+    def mock_stack(self) -> Generator[MagicMock, None, None]:
+        with patch.object(jam_module, "JobAttachmentsBootstrapStack") as mock:
+            yield mock.return_value
 
-    @mock.patch(
-        "deadline_test_scaffolding.job_attachment_manager." "JobAttachmentManager.cleanup_resources"
-    )
-    def test_deploy_resources_client_error(
+    @pytest.fixture
+    def job_attachment_manager(
         self,
-        mocked_cleanup_resources: mock.MagicMock,
-    ):
-        """
-        Test that if there's an issue deploying resources, the rest get cleaned up.
-        """
-        # WHEN
-        with mock.patch.object(
-            self.job_attachment_manager.deadline_manager,
-            "create_kms_key",
-            side_effect=ClientError(
-                {"ErrorCode": "Oops", "Message": "Something went wrong"}, "create_kms_key"
-            ),
-        ), pytest.raises(ClientError):
-            self.job_attachment_manager.deploy_resources()
+    ) -> Generator[JobAttachmentManager, None, None]:
+        with mock_s3():
+            yield JobAttachmentManager(
+                s3_resource=boto3.resource("s3"),
+                cfn_client=MagicMock(),
+                deadline_client=DeadlineClient(MagicMock()),
+                stage="test",
+                account_id="123456789101",
+            )
 
-        mocked_cleanup_resources.assert_called_once()
+    class TestDeployResources:
+        def test_deploys_all_resources(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+            mock_farm_cls: MagicMock,
+            mock_queue_cls: MagicMock,
+            mock_stack: MagicMock,
+        ):
+            """
+            Tests that all resources are created when deploy_resources is called
+            """
+            # WHEN
+            job_attachment_manager.deploy_resources()
 
-    @mock.patch(
-        "deadline_test_scaffolding.job_attachment_manager." "JobAttachmentManager.cleanup_resources"
-    )
-    def test_deploy_resources_waiter_error(
+            # THEN
+            mock_farm_cls.create.assert_called_once()
+            mock_queue_cls.create.assert_called_once()
+            mock_stack.deploy.assert_called_once()
+
+        @pytest.mark.parametrize(
+            "error",
+            [
+                ClientError({}, None),
+                WaiterError(None, None, None),
+            ],
+        )
+        def test_cleans_up_when_error_is_raised(
+            self,
+            error: Exception,
+            job_attachment_manager: JobAttachmentManager,
+            mock_farm_cls: MagicMock,
+            mock_queue_cls: MagicMock,
+            mock_stack: MagicMock,
+        ):
+            """
+            Test that if there's an issue deploying resources, the rest get cleaned up.
+            """
+            # GIVEN
+            possible_failures: list[MagicMock] = [
+                mock_farm_cls.create,
+                mock_queue_cls.create,
+                mock_stack.deploy,
+            ]
+            for possible_failure in possible_failures:
+                possible_failure.side_effect = error
+
+                with (
+                    patch.object(
+                        job_attachment_manager,
+                        "cleanup_resources",
+                        wraps=job_attachment_manager.cleanup_resources,
+                    ) as spy_cleanup_resources,
+                    pytest.raises(type(error)) as raised_exc,
+                ):
+                    # WHEN
+                    job_attachment_manager.deploy_resources()
+
+                # THEN
+                assert raised_exc.value is error
+                spy_cleanup_resources.assert_called_once()
+
+    class TestEmptyBucket:
+        def test_deletes_all_objects(self, job_attachment_manager: JobAttachmentManager):
+            # GIVEN
+            bucket = job_attachment_manager.bucket
+            bucket.create()
+            bucket.put_object(Key="test-object", Body="Hello world".encode())
+            bucket.put_object(Key="test-object-2", Body="Hello world 2".encode())
+            assert len(list(bucket.objects.all())) == 2
+
+            # WHEN
+            job_attachment_manager.empty_bucket()
+
+            # THEN
+            assert len(list(bucket.objects.all())) == 0
+
+        def test_swallows_bucket_doesnt_exist_error(
+            self, job_attachment_manager: JobAttachmentManager
+        ):
+            """
+            If we try to empty a bucket that doesn't exist, make sure nothing happens.
+            """
+            # GIVEN
+            # The bucket does not exist (we do not create it)
+
+            try:
+                # WHEN
+                job_attachment_manager.empty_bucket()
+            except ClientError as e:
+                pytest.fail(
+                    f"JobAttachmentManager.empty_bucket raised an error when it shouldn't have: {e}"
+                )
+            else:
+                # THEN
+                # Success
+                pass
+
+        def test_raises_any_other_error(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+        ):
+            """
+            Test that unhandled client errors during bucket creation are raised.
+            """
+            # GIVEN
+            exc = ClientError({"Error": {"Message": "test"}}, "test-operation")
+            with (
+                patch.object(job_attachment_manager, "bucket") as mock_bucket,
+                pytest.raises(ClientError) as raised_exc,
+            ):
+                mock_bucket.objects.all.side_effect = exc
+
+                # WHEN
+                job_attachment_manager.empty_bucket()
+
+            # THEN
+            assert raised_exc.value is exc
+            mock_bucket.objects.all.assert_called_once()
+
+    def test_cleanup_resources(
         self,
-        mocked_cleanup_resources: mock.MagicMock,
+        job_attachment_manager: JobAttachmentManager,
+        mock_farm_cls: MagicMock,
+        mock_queue_cls: MagicMock,
+        mock_stack: MagicMock,
     ):
-        """
-        Test that if there's an issue deploying resources, the rest get cleaned up.
-        But this time with a waiter error.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.stack.meta.client) as stubber, pytest.raises(
-            WaiterError
-        ):
-            stubber.add_response(
-                "update_stack",
-                {
-                    "StackId": "arn:aws:cloudformation:us-west-2:123456789101:stack/"
-                    "JobAttachmentIntegTest/abcdefgh-1234-ijkl-5678-mnopqrstuvwx"
-                },
-                expected_params={
-                    "StackName": "JobAttachmentIntegTest",
-                    "TemplateBody": ANY,
-                    "Parameters": [
-                        {
-                            "ParameterKey": "BucketName",
-                            "ParameterValue": "job-attachment-integ-test-test-123456789101",
-                        },
-                    ],
-                },
-            )
-            stubber.add_client_error(
-                "describe_stacks", service_error_code="400", service_message="Oops"
-            )
-
-            self.job_attachment_manager.deploy_resources()
-
-            stubber.assert_no_pending_responses()
-
-        mocked_cleanup_resources.assert_called_once()
-
-    def test_deploy_stack_update_while_create_in_progress(self):
-        """
-        Test that if an attempt to update a stack when a stack is in the process of being created,
-        we wait for the stack to complete being created.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.stack.meta.client) as stubber:
-            stubber.add_client_error(
-                "update_stack",
-                service_error_code="400",
-                service_message="JobAttachmentIntegTest is in CREATE_IN_PROGRESS "
-                "state and can not be updated.",
-            )
-            stubber.add_response(
-                "describe_stacks",
-                {
-                    "Stacks": [
-                        {
-                            "StackName": "JobAttachmentIntegTest",
-                            "CreationTime": datetime(2015, 1, 1),
-                            "StackStatus": "CREATE_COMPLETE",
-                        },
-                    ],
-                },
-                expected_params={
-                    "StackName": "JobAttachmentIntegTest",
-                },
-            )
-
-            self.job_attachment_manager.deploy_stack()
-
-            stubber.assert_no_pending_responses()
-
-    @mock.patch(
-        "deadline_test_scaffolding.job_attachment_manager." "JobAttachmentManager._create_stack"
-    )
-    def test_deploy_stack_update_while_stack_doesnt_need_updating(
-        self, mocked__create_stack: mock.MagicMock
-    ):
-        """
-        Test that if a stack already exists that doesn't need updating, nothing happens.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.stack.meta.client) as stubber:
-            stubber.add_client_error(
-                "update_stack",
-                service_error_code="400",
-                service_message="No updates are to be performed.",
-            )
-
-            self.job_attachment_manager.deploy_stack()
-
-            stubber.assert_no_pending_responses()
-
-        mocked__create_stack.assert_not_called()
-
-    def test_deploy_stack_stack_doesnt_exist(self):
-        """
-        Test that if when updating the stack, that it gets created if it doesn't exist.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.stack.meta.client) as stubber:
-            stubber.add_client_error(
-                "update_stack",
-                service_error_code="400",
-                service_message="The Stack JobAttachmentIntegTest doesn't exist",
-            )
-            stubber.add_response(
-                "create_stack",
-                {
-                    "StackId": "arn:aws:cloudformation:us-west-2:123456789101:stack/"
-                    "JobAttachmentIntegTest/abcdefgh-1234-ijkl-5678-mnopqrstuvwx"
-                },
-                expected_params={
-                    "StackName": "JobAttachmentIntegTest",
-                    "TemplateBody": ANY,
-                    "OnFailure": "DELETE",
-                    "EnableTerminationProtection": False,
-                    "Parameters": [
-                        {
-                            "ParameterKey": "BucketName",
-                            "ParameterValue": "job-attachment-integ-test-test-123456789101",
-                        },
-                    ],
-                },
-            )
-            stubber.add_response(
-                "describe_stacks",
-                {
-                    "Stacks": [
-                        {
-                            "StackName": "JobAttachmentIntegTest",
-                            "CreationTime": datetime(2015, 1, 1),
-                            "StackStatus": "CREATE_COMPLETE",
-                        },
-                    ],
-                },
-                expected_params={
-                    "StackName": "JobAttachmentIntegTest",
-                },
-            )
-
-            self.job_attachment_manager.deploy_stack()
-
-            stubber.assert_no_pending_responses()
-
-    def test_deploy_stack_stack_already_exists(self):
-        """
-        Test the if we try to create a stack when it already exists,
-        we wait for it to finish being created.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.stack.meta.client) as stubber:
-            stubber.add_client_error(
-                "update_stack",
-                service_error_code="400",
-                service_message="The Stack JobAttachmentIntegTest doesn't exist",
-            )
-            stubber.add_client_error(
-                "create_stack",
-                service_error_code="400",
-                service_message="Stack [JobAttachmentIntegTest] already exists",
-            )
-            stubber.add_response(
-                "describe_stacks",
-                {
-                    "Stacks": [
-                        {
-                            "StackName": "JobAttachmentIntegTest",
-                            "CreationTime": datetime(2015, 1, 1),
-                            "StackStatus": "CREATE_COMPLETE",
-                        },
-                    ],
-                },
-                expected_params={
-                    "StackName": "JobAttachmentIntegTest",
-                },
-            )
-
-            self.job_attachment_manager.deploy_stack()
-
-            stubber.assert_no_pending_responses()
-
-    def test_deploy_stack_other_client_error(self):
-        """
-        Test that when we create a stack, unhandled client errors get raised.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.stack.meta.client) as stubber, pytest.raises(
-            ClientError
-        ):
-            stubber.add_client_error(
-                "update_stack",
-                service_error_code="400",
-                service_message="The Stack JobAttachmentIntegTest doesn't exist",
-            )
-            stubber.add_client_error(
-                "create_stack",
-                service_error_code="400",
-                service_message="Oops",
-            )
-
-            self.job_attachment_manager.deploy_stack()
-
-            stubber.assert_no_pending_responses()
-
-    def test_empty_bucket_bucket_doesnt_exist(self):
-        """
-        If we try to empty a bucket that doesn't exist, make sure nothing happens.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.bucket.meta.client) as stubber:
-            stubber.add_client_error(
-                "list_objects",
-                service_error_code="400",
-                service_message="The specified bucket does not exist",
-            )
-
-            self.job_attachment_manager.empty_bucket()
-
-            stubber.assert_no_pending_responses()
-
-    def test_empty_bucket_any_other_error(self):
-        """
-        Test that unhandled client errors during bucket creation are raised.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.bucket.meta.client) as stubber, pytest.raises(
-            ClientError
-        ):
-            stubber.add_client_error(
-                "list_objects",
-                service_error_code="400",
-                service_message="Ooops",
-            )
-
-            self.job_attachment_manager.empty_bucket()
-
-            stubber.assert_no_pending_responses()
-
-    def test_cleanup_resources(self):
         """
         Test that all resources get cleaned up when they exist.
         """
-        self.job_attachment_manager.deadline_manager.farm_id = "farm-asdf"
-        self.job_attachment_manager.deadline_manager.kms_key_metadata = {"key_id": "aasdfkj"}
-        self.job_attachment_manager.deadline_manager.queue_id = "queue-asdfji"
+        # GIVEN
+        job_attachment_manager.deploy_resources()
 
-        # WHEN
-        with Stubber(self.job_attachment_manager.bucket.meta.client) as stubber:
-            stubber.add_response(
-                "list_objects",
-                {
-                    "Contents": [],
-                },
-            )
-            self.job_attachment_manager.cleanup_resources()
+        with patch.object(
+            job_attachment_manager, "empty_bucket", wraps=job_attachment_manager.empty_bucket
+        ) as spy_empty_bucket:
+            # WHEN
+            job_attachment_manager.cleanup_resources()
 
-            stubber.assert_no_pending_responses()
-
-        self.job_attachment_manager.deadline_manager.delete_farm.assert_called_once()  # type: ignore[attr-defined] # noqa
-        self.job_attachment_manager.deadline_manager.delete_kms_key.assert_called_once()  # type: ignore[attr-defined] # noqa
-        self.job_attachment_manager.deadline_manager.delete_queue.assert_called_once()  # type: ignore[attr-defined] # noqa
-
-    def test_cleanup_resources_no_resource_exist(self):
-        """
-        Test that no deletion calls are made when resources don't exist.
-        """
-        # WHEN
-        with Stubber(self.job_attachment_manager.bucket.meta.client) as stubber:
-            stubber.add_response(
-                "list_objects",
-                {
-                    "Contents": [],
-                },
-            )
-            self.job_attachment_manager.cleanup_resources()
-
-            stubber.assert_no_pending_responses()
-
-        self.job_attachment_manager.deadline_manager.create_farm.assert_not_called()  # type: ignore[attr-defined] # noqa
-        self.job_attachment_manager.deadline_manager.create_kms_key.assert_not_called()  # type: ignore[attr-defined] # noqa
-        self.job_attachment_manager.deadline_manager.create_queue.assert_not_called()  # type: ignore[attr-defined] # noqa
+        # THEN
+        spy_empty_bucket.assert_called_once()
+        mock_stack.destroy.assert_called_once()
+        mock_queue_cls.create.return_value.delete.assert_called_once()
+        mock_farm_cls.create.return_value.delete.assert_called_once()

@@ -2,28 +2,30 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from deadline_test_scaffolding import DeadlineClient
-from shared_constants import MOCK_FARM_NAME, MOCK_FLEET_NAME, MOCK_QUEUE_NAME
+
+MOCK_FARM_NAME = "test-farm"
+MOCK_FLEET_NAME = "test-fleet"
+MOCK_QUEUE_NAME = "test-queue"
 
 
-class FakeClient:
-    def fake_deadline_client_has_this(self) -> str:
-        return "from fake client"
-
-    def but_not_this(self) -> str:
-        return "from fake client"
-
-
-class FakeDeadlineClient(DeadlineClient):
-    def fake_deadline_client_has_this(self) -> str:
-        return "from fake deadline client"
-
-
-class TestDeadlineShim:
+class TestDeadlineClient:
     def test_deadline_client_pass_through(self) -> None:
         """
         Confirm that DeadlineClient passes through unknown methods to the underlying client
         but just executes known methods.
         """
+
+        class FakeClient:
+            def fake_deadline_client_has_this(self) -> str:
+                return "from fake client"
+
+            def but_not_this(self) -> str:
+                return "from fake client"
+
+        class FakeDeadlineClient(DeadlineClient):
+            def fake_deadline_client_has_this(self) -> str:
+                return "from fake deadline client"
+
         fake_client = FakeClient()
         deadline_client = FakeDeadlineClient(fake_client)
 
