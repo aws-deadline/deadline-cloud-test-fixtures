@@ -5,5 +5,5 @@ pytest-timeout ~= 2.1
 pytest-xdist ~= 3.3
 black ~= 23.7
 mypy == 1.5.0
-ruff ~= 0.0.284
+ruff ~= 0.0.285
 twine ~= 4.0
