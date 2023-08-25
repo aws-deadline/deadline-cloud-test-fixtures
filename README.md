@@ -1,11 +1,33 @@
-## My Project
+## Deadline Test Scaffolding
 
-TODO: Fill this README out!
+# Build / Test / Release
 
-Be sure to:
+## Setup Code Artifact
 
-* Change the title in this README
-* Edit your repository description on GitHub
+## Build the package.
+```
+hatch build
+```
+
+## Run tests
+```
+hatch run test
+```
+
+## Run linting
+```
+hatch run lint
+```
+
+## Run formating
+```
+hatch run fmt
+```
+
+## Run a tests for all supported Python versions.
+```
+hatch run all:test
+```
 
 ## Security
 
