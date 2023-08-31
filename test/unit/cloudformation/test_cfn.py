@@ -8,7 +8,7 @@ from botocore.client import BaseClient
 from botocore.exceptions import ClientError
 from moto import mock_cloudformation
 
-from deadline_test_scaffolding.cloudformation.cfn import (
+from deadline_test_fixtures.cloudformation.cfn import (
     CfnResource,
     CfnStack,
 )

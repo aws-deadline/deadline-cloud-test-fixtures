@@ -8,8 +8,8 @@ import pytest
 from botocore.exceptions import ClientError, WaiterError
 from moto import mock_s3
 
-from deadline_test_scaffolding import job_attachment_manager as jam_module
-from deadline_test_scaffolding import DeadlineClient, JobAttachmentManager
+from deadline_test_fixtures import job_attachment_manager as jam_module
+from deadline_test_fixtures import DeadlineClient, JobAttachmentManager
 
 
 class TestJobAttachmentManager:

@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.entry-points.pytest11]
-deadline_test_scaffolding = "deadline_test_scaffolding.fixtures"
+deadline_test_fixtures = "deadline_test_fixtures.fixtures"
 
 [tool.hatch.build]
 artifacts = [
@@ -36,7 +36,7 @@ sources = [
   "_version.py",
 ]
 destinations = [
-  "src/deadline_test_scaffolding",
+  "src/deadline_test_fixtures",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -47,7 +47,7 @@ include = [
 
 [tool.hatch.build.targets.wheel]
 packages = [
-  "src/deadline_test_scaffolding"
+  "src/deadline_test_fixtures"
 ]
 
 [tool.mypy]
@@ -75,7 +75,7 @@ line-length = 100
 
 [tool.ruff.isort]
 known-first-party = [
-  "deadline_test_scaffolding"
+  "deadline_test_fixtures"
 ]
 
 [tool.black]
@@ -85,7 +85,7 @@ line-length = 100
 xfail_strict = true
 addopts = [
   "--durations=5",
-  "--cov=src/deadline_test_scaffolding",
+  "--cov=src/deadline_test_fixtures",
   "--color=yes",
   "--cov-report=html:build/coverage",
   "--cov-report=xml:build/coverage/coverage.xml",
@@ -103,7 +103,7 @@ filterwarnings = [
 ]
 
 [tool.coverage.run]
-source_pkgs = [ "deadline_test_scaffolding" ]
+source_pkgs = [ "deadline_test_fixtures" ]
 omit = [
   "models.py",
   "fixtures.py",

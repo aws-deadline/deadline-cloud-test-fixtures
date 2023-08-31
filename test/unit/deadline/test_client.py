@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 import pytest
 from unittest.mock import MagicMock, patch
-from deadline_test_scaffolding import DeadlineClient
+from deadline_test_fixtures import DeadlineClient
 
 MOCK_FARM_NAME = "test-farm"
 MOCK_FLEET_NAME = "test-fleet"

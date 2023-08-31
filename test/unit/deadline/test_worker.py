@@ -12,8 +12,8 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_ec2, mock_iam, mock_s3, mock_ssm
 
-from deadline_test_scaffolding.deadline import worker as mod
-from deadline_test_scaffolding import (
+from deadline_test_fixtures.deadline import worker as mod
+from deadline_test_fixtures import (
     CodeArtifactRepositoryInfo,
     CommandResult,
     DeadlineWorkerConfiguration,
@@ -41,7 +41,7 @@ def mock_sleep() -> Generator[None, None, None]:
 @pytest.fixture(autouse=True)
 def wait_for_shim() -> Generator[None, None, None]:
     import sys
-    from deadline_test_scaffolding.util import wait_for
+    from deadline_test_fixtures.util import wait_for
 
     # Force the wait_for to have a short interval for unit tests
     def wait_for_shim(*args, **kwargs):

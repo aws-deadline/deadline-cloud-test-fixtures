@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from deadline_test_scaffolding import (
+from deadline_test_fixtures import (
     Farm,
     Queue,
     Fleet,
@@ -17,13 +17,13 @@ from deadline_test_scaffolding import (
     JobAttachmentSettings,
     TaskStatus,
 )
-from deadline_test_scaffolding.deadline import resources as mod
+from deadline_test_fixtures.deadline import resources as mod
 
 
 @pytest.fixture(autouse=True)
 def wait_for_shim() -> Generator[None, None, None]:
     import sys
-    from deadline_test_scaffolding.util import wait_for
+    from deadline_test_fixtures.util import wait_for
 
     # Force the wait_for to have a short interval for unit tests
     def wait_for_shim(*args, **kwargs):
