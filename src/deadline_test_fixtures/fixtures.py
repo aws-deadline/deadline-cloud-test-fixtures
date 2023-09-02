@@ -96,7 +96,10 @@ class DeadlineResources:
 
 
 @pytest.fixture(scope="session")
-def deadline_client() -> DeadlineClient:
+def deadline_client(
+    # Explicitly request fixture since pytest.mark.usefixtures doesn't work on fixtures
+    install_service_model: str,
+) -> DeadlineClient:
     endpoint_url = os.getenv("DEADLINE_ENDPOINT")
     if endpoint_url:
         LOG.info(f"Using Amazon Deadline Cloud endpoint: {endpoint_url}")
@@ -158,7 +161,7 @@ def service_model() -> Generator[ServiceModel, None, None]:
         yield ServiceModel.from_json_file(local_model_path)
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def install_service_model(service_model: ServiceModel) -> Generator[None, None, None]:
     LOG.info("Installing service model and configuring boto to use it for API calls")
     with service_model.install() as model_path:
@@ -234,7 +237,8 @@ def bootstrap_resources(request: pytest.FixtureRequest) -> BootstrapResources:
 
 @pytest.fixture(scope="session")
 def deadline_resources(
-    request: pytest.FixtureRequest, deadline_client: DeadlineClient
+    request: pytest.FixtureRequest,
+    deadline_client: DeadlineClient,
 ) -> Generator[DeadlineResources, None, None]:
     """
     Gets Deadline resources required for running tests.
