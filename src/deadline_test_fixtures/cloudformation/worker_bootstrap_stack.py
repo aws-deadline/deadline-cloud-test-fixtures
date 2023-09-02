@@ -3,12 +3,11 @@ from __future__ import annotations
 
 from .cfn import (
     Bucket,
-    BucketPolicy,
-    CfnResource,
     CfnStack,
     InstanceProfile,
     Role,
 )
+from .util import create_secure_bucket
 from ..models import CodeArtifactRepositoryInfo
 
 
@@ -18,9 +17,7 @@ class WorkerBootstrapStack(CfnStack):  # pragma: no cover
     worker_instance_profile: InstanceProfile
     session_role: Role
     job_attachments_bucket: Bucket
-    job_attachments_bucket_policy: CfnResource
     bootstrap_bucket: Bucket
-    bootstrap_bucket_policy: CfnResource
 
     def __init__(
         self,
@@ -30,7 +27,6 @@ class WorkerBootstrapStack(CfnStack):  # pragma: no cover
         credential_vending_service_principal: str,
         codeartifact: CodeArtifactRepositoryInfo,
         description: str | None = None,
-        service_model_s3_object_arn: str | None = None,
     ) -> None:
         super().__init__(
             name=name,
@@ -38,32 +34,13 @@ class WorkerBootstrapStack(CfnStack):  # pragma: no cover
             capabilities=["CAPABILITY_NAMED_IAM"],
         )
 
-        self.bootstrap_bucket = Bucket(
+        self.bootstrap_bucket, _, _ = create_secure_bucket(
             self,
             "BootstrapBucket",
-            bucket_name=f"deadline-scaffolding-worker-bootstrap-{account}",
-            update_replace_policy="Delete",
-            deletion_policy="Delete",
-        )
-
-        self.bootstrap_bucket_policy = BucketPolicy(
-            self,
-            "BootstrapBucketPolicy",
-            bucket=self.bootstrap_bucket,
-            policy_document={
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Action": "s3:*",
-                        "Effect": "Deny",
-                        "Principal": "*",
-                        "Resource": [
-                            self.bootstrap_bucket.arn,
-                            self.bootstrap_bucket.arn_for_objects(),
-                        ],
-                        "Condition": {"Bool": {"aws:SecureTransport": "false"}},
-                    },
-                ],
+            bucket_kwargs={
+                "bucket_name": f"deadline-scaffolding-worker-bootstrap-{account}",
+                "update_replace_policy": "Delete",
+                "deletion_policy": "Delete",
             },
         )
 
@@ -163,7 +140,6 @@ class WorkerBootstrapStack(CfnStack):  # pragma: no cover
                                 "Effect": "Allow",
                                 "Action": [
                                     "deadline:CreateWorker",
-                                    "deadline:GetWorkerIamCredentials",
                                     "deadline:AssumeFleetRoleForWorker",
                                 ],
                                 "Resource": "*",
@@ -177,18 +153,6 @@ class WorkerBootstrapStack(CfnStack):  # pragma: no cover
                                 ],
                                 "Resource": [self.bootstrap_bucket.arn_for_objects()],
                             },
-                            # Allows the worker to download service model
-                            *(
-                                [
-                                    {
-                                        "Action": ["s3:GetObject", "s3:HeadObject"],
-                                        "Resource": [service_model_s3_object_arn],
-                                        "Effect": "Allow",
-                                    }
-                                ]
-                                if service_model_s3_object_arn
-                                else []
-                            ),
                             # Allows access to code artifact
                             {
                                 "Action": ["codeartifact:GetAuthorizationToken"],
@@ -221,32 +185,13 @@ class WorkerBootstrapStack(CfnStack):  # pragma: no cover
             roles=[self.worker_bootstrap_role],
         )
 
-        self.job_attachments_bucket = Bucket(
+        self.job_attachments_bucket, _, _ = create_secure_bucket(
             self,
             "JobAttachmentsBucket",
-            bucket_name=f"deadline-scaffolding-worker-job-attachments-{account}",
-            update_replace_policy="Delete",
-            deletion_policy="Delete",
-        )
-
-        self.job_attachments_bucket_policy = BucketPolicy(
-            self,
-            "JobAttachmentsBucketPolicy",
-            bucket=self.job_attachments_bucket,
-            policy_document={
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Action": "s3:*",
-                        "Effect": "Deny",
-                        "Principal": "*",
-                        "Resource": [
-                            self.job_attachments_bucket.arn,
-                            self.job_attachments_bucket.arn_for_objects(),
-                        ],
-                        "Condition": {"Bool": {"aws:SecureTransport": "false"}},
-                    },
-                ],
+            bucket_kwargs={
+                "bucket_name": f"deadline-scaffolding-worker-job-attachments-{account}",
+                "update_replace_policy": "Delete",
+                "deletion_policy": "Delete",
             },
         )
 

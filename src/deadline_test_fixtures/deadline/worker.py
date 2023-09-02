@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, InitVar, replace
 from typing import Any, ClassVar, Optional, cast
 
 from .client import DeadlineClient
-from ..models import CodeArtifactRepositoryInfo, ServiceModel
+from ..models import PipInstall, ServiceModel
 from ..util import call_api, wait_for
 
 LOG = logging.getLogger(__name__)
@@ -54,61 +54,6 @@ def configure_worker_command(*, config: DeadlineWorkerConfiguration) -> str:  # 
         )
 
     return " && ".join(cmds)
-
-
-@dataclass(frozen=True)
-class PipInstall:  # pragma: no cover
-    requirement_specifiers: list[str]
-    """See https://peps.python.org/pep-0508/"""
-    upgrade_pip: bool = True
-    find_links: list[str] | None = None
-    no_deps: bool = False
-    force_reinstall: bool = False
-    codeartifact: CodeArtifactRepositoryInfo | None = None
-
-    def __post_init__(self) -> None:
-        assert len(
-            self.requirement_specifiers
-        ), "At least one requirement specifier is required, but got 0"
-
-    @property
-    def install_args(self) -> list[str]:
-        args = []
-        if self.find_links:
-            args.append(f"--find-links={','.join(self.find_links)}")
-        if self.no_deps:
-            args.append("--no-deps")
-        if self.force_reinstall:
-            args.append("--force-reinstall")
-        return args
-
-    @property
-    def install_command(self) -> str:
-        cmds = []
-
-        if self.codeartifact:
-            cmds.append(
-                "aws codeartifact login --tool pip "
-                + f"--domain {self.codeartifact.domain} "
-                + f"--domain-owner {self.codeartifact.domain_owner} "
-                + f"--repository {self.codeartifact.repository} "
-            )
-
-        if self.upgrade_pip:
-            cmds.append("pip install --upgrade pip")
-
-        cmds.append(
-            " ".join(
-                [
-                    "pip",
-                    "install",
-                    *self.install_args,
-                    *self.requirement_specifiers,
-                ]
-            )
-        )
-
-        return " && ".join(cmds)
 
 
 class DeadlineWorker(abc.ABC):
@@ -476,7 +421,9 @@ class DockerContainerWorker(DeadlineWorker):
                 docker_file_mappings[src_docker_path] = dst
 
                 # Copy the file over to the stage directory
-                shutil.copyfile(src, str(file_mappings_dir / src_file_name))
+                staged_dst = str(file_mappings_dir / src_file_name)
+                LOG.info(f"Copying file {src} to {staged_dst}")
+                shutil.copyfile(src, staged_dst)
 
             run_container_env["FILE_MAPPINGS"] = json.dumps(docker_file_mappings)
 

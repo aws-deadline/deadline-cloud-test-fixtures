@@ -6,6 +6,8 @@ import botocore.exceptions
 import json
 import logging
 import re
+from dataclasses import dataclass
+from typing import Literal
 
 from ..util import clean_kwargs
 
@@ -136,6 +138,12 @@ class CfnResource:
         return {"Fn::GetAtt": [self.logical_name, name]}
 
 
+@dataclass(frozen=True)
+class BucketLogging:
+    destination_bucket: Bucket | None = None
+    log_file_prefix: str | None = None
+
+
 class Bucket(CfnResource):  # pragma: no cover
     _physical_name_prop = "BucketName"
 
@@ -145,23 +153,45 @@ class Bucket(CfnResource):  # pragma: no cover
         logical_name: str,
         *,
         bucket_name: str | None = None,
+        versioning: bool = False,
+        encryption: dict | None = None,
+        block_public_access: Literal["ALL"] | None = None,
+        logging: BucketLogging | None = None,
         **kwargs,
     ) -> None:
+        public_access_block_config = (
+            {
+                "BlockPublicAcls": True,
+                "BlockPublicPolicy": True,
+                "IgnorePublicAcls": True,
+                "RestrictPublicBuckets": True,
+            }
+            if block_public_access == "ALL"
+            else None
+        )
+
+        versioning_config = {"Status": "Enabled" if versioning else "Suspended"}
+
+        logging_config = (
+            clean_kwargs(
+                {
+                    "DestinationBucketName": logging.destination_bucket.ref
+                    if logging.destination_bucket
+                    else None,
+                    "LogFilePrefix": logging.log_file_prefix,
+                }
+            )
+            if logging
+            else None
+        )
+
         props = clean_kwargs(
             {
                 "BucketName": bucket_name,
-                # Always apply secure bucket settings
-                "BucketEncryption": {
-                    "ServerSideEncryptionConfiguration": [
-                        {"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}},
-                    ],
-                },
-                "PublicAccessBlockConfiguration": {
-                    "BlockPublicAcls": True,
-                    "BlockPublicPolicy": True,
-                    "IgnorePublicAcls": True,
-                    "RestrictPublicBuckets": True,
-                },
+                "VersioningConfiguration": versioning_config,
+                "PublicAccessBlockConfiguration": public_access_block_config,
+                "BucketEncryption": encryption,
+                "LoggingConfiguration": logging_config,
             }
         )
         super().__init__(stack, "AWS::S3::Bucket", logical_name, props, **kwargs)

@@ -87,7 +87,9 @@ def worker_config(region: str) -> DeadlineWorkerConfiguration:
             ("/aws/models/deadline.json", "/tmp/deadline.json"),
         ],
         service_model=ServiceModel(
-            "aws configure add-model --service-model file:///tmp/deadline.json"
+            file_path="/tmp/deadline/1234-12-12/service-2.json",
+            api_version="1234-12-12",
+            service_name="deadline",
         ),
     )
 

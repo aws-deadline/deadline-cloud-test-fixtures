@@ -10,6 +10,7 @@ import logging
 import os
 import posixpath
 import pytest
+import tempfile
 from dataclasses import InitVar, dataclass, field, fields, MISSING
 from typing import Any, Generator
 
@@ -27,9 +28,15 @@ from .deadline.worker import (
     EC2InstanceWorker,
     PipInstall,
 )
-from .models import CodeArtifactRepositoryInfo, JobAttachmentSettings, ServiceModel, S3Object
+from .models import (
+    CodeArtifactRepositoryInfo,
+    JobAttachmentSettings,
+    ServiceModel,
+    S3Object,
+)
 from .cloudformation import WorkerBootstrapStack
 from .job_attachment_manager import JobAttachmentManager
+from .util import call_api
 
 LOG = logging.getLogger(__name__)
 
@@ -120,9 +127,43 @@ def codeartifact() -> CodeArtifactRepositoryInfo:
 
 
 @pytest.fixture(scope="session")
-def service_model_s3_object() -> S3Object | None:
+def service_model() -> Generator[ServiceModel, None, None]:
     service_model_s3_uri = os.getenv("DEADLINE_SERVICE_MODEL_S3_URI")
-    return S3Object.from_uri(service_model_s3_uri) if service_model_s3_uri else None
+    local_model_path = os.getenv("LOCAL_MODEL_PATH")
+
+    assert not (
+        service_model_s3_uri and local_model_path
+    ), "Cannot provide both DEADLINE_SERVICE_MODEL_S3_URI and LOCAL_MODEL_PATH"
+
+    if service_model_s3_uri:
+        LOG.info(f"Using Deadline model from S3: {service_model_s3_uri}")
+
+        LOG.info(f"Downloading {service_model_s3_uri}")
+        s3_obj = S3Object.from_uri(service_model_s3_uri)
+        s3_client = boto3.client("s3")
+        response = call_api(
+            description=f"Downloading {service_model_s3_uri}",
+            fn=lambda: s3_client.get_object(Bucket=s3_obj.bucket, Key=s3_obj.key),
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = os.path.join(tmpdir, "service-2.json")
+            with open(json_path, mode="w") as f:
+                f.write(response["Body"].read())
+            yield ServiceModel.from_json_file(json_path)
+    else:
+        if not local_model_path:
+            local_model_path = _find_latest_service_model_file("deadline")
+        LOG.info(f"Using service model at: {local_model_path}")
+        yield ServiceModel.from_json_file(local_model_path)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def install_service_model(service_model: ServiceModel) -> Generator[None, None, None]:
+    LOG.info("Installing service model and configuring boto to use it for API calls")
+    with service_model.install() as model_path:
+        LOG.info(f"Installed service model to {model_path}")
+        yield
 
 
 @pytest.fixture(scope="session")
@@ -134,7 +175,7 @@ def bootstrap_resources(request: pytest.FixtureRequest) -> BootstrapResources:
         SERVICE_ACCOUNT_ID: ID of the AWS account to deploy the bootstrap stack into.
             This option is ignored if BYO_BOOTSTRAP is set to "true"
         CREDENTIAL_VENDING_PRINCIPAL: The credential vending service principal to use.
-            Defaults to credential-vending.deadline-closed-beta.amazonaws.com
+            Defaults to credentials.deadline.amazonaws.com
             This option is ignored if BYO_BOOTSTRAP is set to "true"
         BYO_BOOTSTRAP: Whether the bootstrap stack deployment should be skipped.
             If this is set to "true", environment values must be specified to fill the resources.
@@ -166,12 +207,9 @@ def bootstrap_resources(request: pytest.FixtureRequest) -> BootstrapResources:
     else:
         account = os.environ["SERVICE_ACCOUNT_ID"]
         codeartifact: CodeArtifactRepositoryInfo = request.getfixturevalue("codeartifact")
-        service_model_s3_object: S3Object | None = request.getfixturevalue(
-            "service_model_s3_object"
-        )
-        crednetial_vending_service_principal = os.getenv(
+        credential_vending_service_principal = os.getenv(
             "CREDENTIAL_VENDING_PRINCIPAL",
-            "credential-vending.deadline-closed-beta.amazonaws.com",
+            "credentials.deadline.amazonaws.com",
         )
 
         stack_name = "DeadlineScaffoldingWorkerBootstrapStack"
@@ -180,10 +218,7 @@ def bootstrap_resources(request: pytest.FixtureRequest) -> BootstrapResources:
             name=stack_name,
             codeartifact=codeartifact,
             account=account,
-            credential_vending_service_principal=crednetial_vending_service_principal,
-            service_model_s3_object_arn=service_model_s3_object.arn
-            if service_model_s3_object
-            else None,
+            credential_vending_service_principal=credential_vending_service_principal,
         )
         stack.deploy(cfn_client=boto3.client("cloudformation"))
 
@@ -288,24 +323,15 @@ def deadline_resources(
 
 
 @pytest.fixture(scope="session")
-def worker(
-    request: pytest.FixtureRequest,
-    deadline_client: DeadlineClient,
+def worker_config(
     deadline_resources: DeadlineResources,
     codeartifact: CodeArtifactRepositoryInfo,
-    service_model_s3_object: S3Object | None,
-) -> Generator[DeadlineWorker, None, None]:
+    service_model: ServiceModel,
+) -> DeadlineWorkerConfiguration:
     """
-    Gets a DeadlineWorker for use in tests.
+    Builds the configuration for a DeadlineWorker.
 
     Environment Variables:
-        SUBNET_ID: The subnet ID to deploy the EC2 worker into.
-            This is required for EC2 workers. Does not apply if USE_DOCKER_WORKER is true.
-        SECURITY_GROUP_ID: The security group ID to deploy the EC2 worker into.
-            This is required for EC2 workers. Does not apply if USE_DOCKER_WORKER is true.
-        AMI_ID: The AMI ID to use for the Worker agent.
-            Defaults to the latest AL2023 AMI.
-            Does not apply if USE_DOCKER_WORKER is true.
         WORKER_REGION: The AWS region to configure the worker for
             Falls back to AWS_DEFAULT_REGION, then defaults to us-west-2
         WORKER_POSIX_USER: The POSIX user to configure the worker for
@@ -317,10 +343,9 @@ def worker(
             If WORKER_AGENT_WHL_PATH is provided, this option is ignored.
         LOCAL_MODEL_PATH: Path to a local Deadline model file to use for API calls.
             If DEADLINE_SERVICE_MODEL_S3_URI was provided, this option is ignored.
-        USE_DOCKER_WORKER: If set to "true", this fixture will create a Worker that runs in a local Docker container instead of an EC2 instance.
 
     Returns:
-        DeadlineWorker: Instance of the DeadlineWorker class that can be used to interact with the Worker.
+        DeadlineWorkerConfiguration: Configuration for use by DeadlineWorker.
     """
     file_mappings: list[tuple[str, str]] = []
 
@@ -346,31 +371,17 @@ def worker(
         )
         LOG.info(f"Using Worker agent package {worker_agent_requirement_specifier}")
 
-    # Prepare the service model
-    service_model: ServiceModel
-    if service_model_s3_object:
-        LOG.info(f"Using Deadline model from S3: {service_model_s3_object.uri}")
-        service_model = ServiceModel.from_s3(
-            local_filename=posixpath.join("/tmp", "deadline-cloud-service-model.json"),
-            object=service_model_s3_object,
-            service_name="deadline",
-        )
-    else:
-        local_model_path = os.getenv("LOCAL_MODEL_PATH")
-        if local_model_path:
-            LOG.info(
-                f"Using Deadline model from local path provided via env var: {local_model_path}"
-            )
-        else:
-            local_model_path = _find_latest_service_model_file("deadline")
-            LOG.info(f"Using Deadline model installed at: {local_model_path}")
-        dst_path = posixpath.join("/tmp", "deadline-cloud-service-model.json")
-        service_model = ServiceModel.from_local_file(
-            local_file_path=dst_path, service_name="deadline"
-        )
-        file_mappings.append((local_model_path, dst_path))
+    # Path map the service model
+    dst_path = posixpath.join("/tmp", "deadline-cloud-service-model.json")
+    path_mapped_model = ServiceModel(
+        file_path=dst_path,
+        api_version=service_model.api_version,
+        service_name=service_model.service_name,
+    )
+    LOG.info(f"The service model will be copied to {dst_path} on the Worker environment")
+    file_mappings.append((service_model.file_path, dst_path))
 
-    configuration = DeadlineWorkerConfiguration(
+    return DeadlineWorkerConfiguration(
         farm_id=deadline_resources.farm.id,
         fleet_id=deadline_resources.fleet.id,
         region=os.getenv("WORKER_REGION", os.getenv("AWS_DEFAULT_REGION", "us-west-2")),
@@ -381,15 +392,40 @@ def worker(
             requirement_specifiers=[worker_agent_requirement_specifier],
             codeartifact=codeartifact,
         ),
-        service_model=service_model,
+        service_model=path_mapped_model,
         file_mappings=file_mappings or None,
     )
+
+
+@pytest.fixture(scope="session")
+def worker(
+    request: pytest.FixtureRequest,
+    deadline_client: DeadlineClient,
+    worker_config: DeadlineWorkerConfiguration,
+) -> Generator[DeadlineWorker, None, None]:
+    """
+    Gets a DeadlineWorker for use in tests.
+
+    Environment Variables:
+        SUBNET_ID: The subnet ID to deploy the EC2 worker into.
+            This is required for EC2 workers. Does not apply if USE_DOCKER_WORKER is true.
+        SECURITY_GROUP_ID: The security group ID to deploy the EC2 worker into.
+            This is required for EC2 workers. Does not apply if USE_DOCKER_WORKER is true.
+        AMI_ID: The AMI ID to use for the Worker agent.
+            Defaults to the latest AL2023 AMI.
+            Does not apply if USE_DOCKER_WORKER is true.
+        USE_DOCKER_WORKER: If set to "true", this fixture will create a Worker that runs in a local Docker container instead of an EC2 instance.
+        KEEP_WORKER_AFTER_FAILURE: If set to "true", will not destroy the Worker when it fails. Useful for debugging. Default is "false"
+
+    Returns:
+        DeadlineWorker: Instance of the DeadlineWorker class that can be used to interact with the Worker.
+    """
 
     worker: DeadlineWorker
     if os.environ.get("USE_DOCKER_WORKER", False):
         LOG.info("Creating Docker worker")
         worker = DockerContainerWorker(
-            configuration=configuration,
+            configuration=worker_config,
         )
     else:
         LOG.info("Creating EC2 worker")
@@ -418,7 +454,7 @@ def worker(
             subnet_id=subnet_id,
             security_group_id=security_group_id,
             instance_profile_name=bootstrap_resources.worker_instance_profile_name,
-            configuration=configuration,
+            configuration=worker_config,
         )
 
     def stop_worker():
