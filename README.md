@@ -1,30 +1,101 @@
-## Deadline Test Scaffolding
+# Deadline Cloud Test Fixtures
 
-# Build / Test / Release
+This package contains pytest fixtures that are used to test Deadline Cloud Python packages.
 
-## Setup Code Artifact
+## Usage
 
-## Build the package.
+To use this package:
+1. Install it into your test environment
+1. Configure environment variables needed for your tests (see [src/deadline_test_fixtures/example_config.sh](https://github.com/casillas2/deadline-cloud-test-fixtures/blob/mainline/src/deadline_test_fixtures/example_config.sh) for available options)
+1. Use the fixtures in your tests (see [src/deadline_test_fixtures/fixtures.py](https://github.com/casillas2/deadline-cloud-test-fixtures/blob/mainline/src/deadline_test_fixtures/fixtures.py) for available fixtures)
+
+For example, to use the `worker` fixture:
+
+```py
+from deadline_test_fixtures import DeadlineWorker
+
+def test_something_with_the_worker(worker: DeadlineWorker) -> None:
+    # GIVEN
+    worker.start()
+
+    # WHEN
+    result = worker.send_command("some command")
+
+    # THEN
+    assert result.stdout == "expected output"
+```
+
+You can also import the classes from this package directly to build your own fixtures
+
+```py
+# double_worker.py
+from deadline_test_fixtures import (
+    DeadlineWorker,
+    EC2InstanceWorker,
+    DockerContainerWorker,
+)
+
+class DoubleWorker(DeadlineWorker):
+
+    def __init__(
+        self,
+        # args...
+    ) -> None:
+        self.ec2_worker = EC2InstanceWorker(
+            # args...
+        )
+        self.docker_worker = DockerContainerWorker(
+            # args...
+        )
+    
+    def start(self) -> None:
+        self.ec2_worker.start()
+        self.docker_worker.start()
+    
+    # etc.
+
+
+# test_something.py
+from .double_worker import DoubleWorker
+
+import pytest
+
+@pytest.fixture
+def double_worker() -> DoubleWorker:
+    return DoubleWorker(
+        # args...
+    )
+
+def test_something(double_worker: DoubleWorker) -> None:
+    # GIVEN
+    double_worker.start()
+
+    # etc.
+```
+
+## Build / Test / Release
+
+### Build the package.
 ```
 hatch build
 ```
 
-## Run tests
+### Run tests
 ```
 hatch run test
 ```
 
-## Run linting
+### Run linting
 ```
 hatch run lint
 ```
 
-## Run formating
+### Run formating
 ```
 hatch run fmt
 ```
 
-## Run a tests for all supported Python versions.
+### Run a tests for all supported Python versions.
 ```
 hatch run all:test
 ```

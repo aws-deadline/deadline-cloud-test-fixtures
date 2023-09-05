@@ -3,7 +3,6 @@
 import dataclasses
 from dataclasses import dataclass
 from typing import Optional
-from deadline_test_scaffolding.constants import JOB_ATTACHMENTS_ROOT_PREFIX
 
 from botocore.exceptions import ClientError as OriginalClientError
 
@@ -83,7 +82,7 @@ class StubDeadlineClient:
             "fleets": [],
             "jobAttachmentSettings": {
                 "s3BucketName": self.job_attachments_bucket_name,
-                "rootPrefix": JOB_ATTACHMENTS_ROOT_PREFIX,
+                "rootPrefix": "root",
             },
         }
 

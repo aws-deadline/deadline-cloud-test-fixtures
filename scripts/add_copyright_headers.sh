@@ -7,8 +7,8 @@ if [ $# -eq 0 ]; then
 fi
 
 for file in "$@"; do
-    if ! head -1 | grep 'Copyright ' "$file" >/dev/null; then
-        case $file in
+    if ! head -1 "$file" | grep 'Copyright ' >/dev/null; then
+        case "$file" in
             *.java)
                 CONTENT=$(cat "$file")
                 cat > "$file" <<EOF
