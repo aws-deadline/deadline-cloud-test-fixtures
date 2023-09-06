@@ -38,7 +38,7 @@ class TestJobAttachmentManager:
     ) -> Generator[JobAttachmentManager, None, None]:
         with mock_s3():
             yield JobAttachmentManager(
-                s3_resource=boto3.resource("s3"),
+                s3_client=boto3.client("s3"),
                 cfn_client=MagicMock(),
                 deadline_client=DeadlineClient(MagicMock()),
                 stage="test",
@@ -61,7 +61,7 @@ class TestJobAttachmentManager:
 
             # THEN
             mock_farm_cls.create.assert_called_once()
-            mock_queue_cls.create.assert_called_once()
+            mock_queue_cls.create.call_count == 2
             mock_stack.deploy.assert_called_once()
 
         @pytest.mark.parametrize(
@@ -109,7 +109,7 @@ class TestJobAttachmentManager:
     class TestEmptyBucket:
         def test_deletes_all_objects(self, job_attachment_manager: JobAttachmentManager):
             # GIVEN
-            bucket = job_attachment_manager.bucket
+            bucket = boto3.resource("s3").Bucket(job_attachment_manager.bucket_name)
             bucket.create()
             bucket.put_object(Key="test-object", Body="Hello world".encode())
             bucket.put_object(Key="test-object-2", Body="Hello world 2".encode())
@@ -152,17 +152,17 @@ class TestJobAttachmentManager:
             # GIVEN
             exc = ClientError({"Error": {"Message": "test"}}, "test-operation")
             with (
-                patch.object(job_attachment_manager, "bucket") as mock_bucket,
+                patch.object(job_attachment_manager, "s3_client") as mock_s3_client,
                 pytest.raises(ClientError) as raised_exc,
             ):
-                mock_bucket.objects.all.side_effect = exc
+                mock_s3_client.list_object_versions.side_effect = exc
 
                 # WHEN
                 job_attachment_manager.empty_bucket()
 
             # THEN
             assert raised_exc.value is exc
-            mock_bucket.objects.all.assert_called_once()
+            mock_s3_client.list_object_versions.assert_called_once()
 
     def test_cleanup_resources(
         self,
@@ -186,5 +186,5 @@ class TestJobAttachmentManager:
         # THEN
         spy_empty_bucket.assert_called_once()
         mock_stack.destroy.assert_called_once()
-        mock_queue_cls.create.return_value.delete.assert_called_once()
+        mock_queue_cls.create.return_value.delete.call_count == 2
         mock_farm_cls.create.return_value.delete.assert_called_once()
