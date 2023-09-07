@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import InitVar, dataclass, field
-from typing import Any
 
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError, WaiterError
@@ -21,29 +20,27 @@ class JobAttachmentManager:
     Responsible for setting up and tearing down job attachment test resources
     """
 
-    s3_resource: Any
+    s3_client: BaseClient
     cfn_client: BaseClient
     deadline_client: DeadlineClient
 
     stage: InitVar[str]
     account_id: InitVar[str]
 
-    bucket: Any = field(init=False)
     stack: JobAttachmentsBootstrapStack = field(init=False)
     farm: Farm | None = field(init=False, default=None)
     queue: Queue | None = field(init=False, default=None)
+    queue_with_no_settings: Queue | None = field(init=False, default=None)
 
     def __post_init__(
         self,
         stage: str,
         account_id: str,
     ):
-        self.bucket = self.s3_resource.Bucket(
-            f"job-attachment-integ-test-{stage.lower()}-{account_id}"
-        )
+        self.bucket_name = f"job-attachment-integ-test-{stage.lower()}-{account_id}"
         self.stack = JobAttachmentsBootstrapStack(
             name="JobAttachmentIntegTest",
-            bucket_name=self.bucket.name,
+            bucket_name=self.bucket_name,
         )
 
     def deploy_resources(self):
@@ -60,6 +57,11 @@ class JobAttachmentManager:
                 display_name="job_attachments_test_queue",
                 farm=self.farm,
             )
+            self.queue_with_no_settings = Queue.create(
+                client=self.deadline_client,
+                display_name="job_attachments_test_no_settings_queue",
+                farm=self.farm,
+            )
             self.stack.deploy(cfn_client=self.cfn_client)
         except (ClientError, WaiterError):
             # If anything goes wrong, rollback
@@ -71,7 +73,15 @@ class JobAttachmentManager:
         Empty the bucket between session runs
         """
         try:
-            self.bucket.objects.all().delete()
+            # List up all objects and their versions in the bucket
+            version_list = self.s3_client.list_object_versions(Bucket=self.bucket_name)
+            object_list = version_list.get("Versions", []) + version_list.get("DeleteMarkers", [])
+            # Delete all objects and versions
+            for obj in object_list:
+                self.s3_client.delete_object(
+                    Bucket=self.bucket_name, Key=obj["Key"], VersionId=obj.get("VersionId", None)
+                )
+
         except ClientError as e:
             if e.response["Error"]["Message"] != "The specified bucket does not exist":
                 raise
@@ -84,5 +94,7 @@ class JobAttachmentManager:
         self.stack.destroy(cfn_client=self.cfn_client)
         if self.queue:
             self.queue.delete(client=self.deadline_client)
+        if self.queue_with_no_settings:
+            self.queue_with_no_settings.delete(client=self.deadline_client)
         if self.farm:
             self.farm.delete(client=self.deadline_client)

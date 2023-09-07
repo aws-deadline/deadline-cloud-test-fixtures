@@ -499,7 +499,7 @@ def deploy_job_attachment_resources() -> Generator[JobAttachmentManager, None, N
         JobAttachmentManager: Class to manage Job Attachments resources
     """
     manager = JobAttachmentManager(
-        s3_resource=boto3.resource("s3"),
+        s3_client=boto3.client("s3"),
         cfn_client=boto3.client("cloudformation"),
         deadline_client=DeadlineClient(boto3.client("deadline")),
         account_id=os.environ["SERVICE_ACCOUNT_ID"],

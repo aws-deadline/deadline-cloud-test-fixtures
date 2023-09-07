@@ -6,12 +6,10 @@ from .cfn import (
     BucketPolicy,
     CfnStack,
 )
-from .util import create_secure_bucket
 
 
 class JobAttachmentsBootstrapStack(CfnStack):  # pragma: no cover
     bucket: Bucket
-    log_bucket: Bucket
     bucket_policy: BucketPolicy
 
     def __init__(
@@ -23,13 +21,37 @@ class JobAttachmentsBootstrapStack(CfnStack):  # pragma: no cover
     ) -> None:
         super().__init__(name=name, description=description)
 
-        self.bucket, self.log_bucket, self.bucket_policy = create_secure_bucket(
-            self,
-            "JobAttachmentBucket",
-            bucket_kwargs={
-                "bucket_name": bucket_name,
+        self.bucket = Bucket(
+            stack=self,
+            logical_name="JobAttachmentBucket",
+            bucket_name=bucket_name,
+            versioning=False,
+            encryption={
+                "ServerSideEncryptionConfiguration": [
+                    {"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}},
+                ],
             },
-            log_bucket_kwargs={
-                "bucket_name": f"{bucket_name}-logs",
+            update_replace_policy="Delete",
+            deletion_policy="Delete",
+        )
+
+        self.bucket_policy = BucketPolicy(
+            stack=self,
+            logical_name="JobAttachmentBucketPolicy",
+            bucket=self.bucket,
+            policy_document={
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Action": "s3:*",
+                        "Effect": "Deny",
+                        "Principal": "*",
+                        "Resource": [
+                            self.bucket.arn,
+                            self.bucket.arn_for_objects(),
+                        ],
+                        "Condition": {"Bool": {"aws:SecureTransport": "false"}},
+                    },
+                ],
             },
         )
