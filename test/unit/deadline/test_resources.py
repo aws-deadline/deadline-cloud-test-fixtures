@@ -501,7 +501,7 @@ class TestJob:
                         "rootPathFormat": "posix",
                     },
                 ],
-                "assetLoadingMethod": "PRELOAD",
+                "fileSystem": "COPIED",
             },
             "description": "Testing",
         }
