@@ -144,15 +144,13 @@ def service_model() -> Generator[ServiceModel, None, None]:
         LOG.info(f"Downloading {service_model_s3_uri}")
         s3_obj = S3Object.from_uri(service_model_s3_uri)
         s3_client = boto3.client("s3")
-        response = call_api(
-            description=f"Downloading {service_model_s3_uri}",
-            fn=lambda: s3_client.get_object(Bucket=s3_obj.bucket, Key=s3_obj.key),
-        )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             json_path = os.path.join(tmpdir, "service-2.json")
-            with open(json_path, mode="w") as f:
-                f.write(response["Body"].read())
+            call_api(
+                description=f"Downloading {service_model_s3_uri}",
+                fn=lambda: s3_client.download_file(s3_obj.bucket, s3_obj.key, json_path),
+            )
             yield ServiceModel.from_json_file(json_path)
     else:
         if not local_model_path:
