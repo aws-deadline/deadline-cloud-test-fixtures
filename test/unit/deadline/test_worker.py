@@ -381,7 +381,7 @@ class TestDockerContainerWorker:
         caplog.set_level("INFO")
 
         # file_mappings
-        tmpdir = "/tmp"
+        tmpdir = os.path.join(os.sep, "tmp")
 
         # subprocess.Popen("./run_container.sh")
         run_container_stdout_lines = ["line1", "line2", ""]
@@ -409,12 +409,12 @@ class TestDockerContainerWorker:
         mock_shutil.copytree.assert_called_once_with(ANY, tmpdir, dirs_exist_ok=True)
 
         # Verify file_mappings dir is staged
-        file_mappings_dir = f"{tmpdir}/file_mappings"
+        file_mappings_dir = os.path.join(tmpdir, "file_mappings")
         mock_makedirs.assert_called_once_with(file_mappings_dir)
         assert worker_config.file_mappings
         for src, _ in worker_config.file_mappings:
             mock_shutil.copyfile.assert_any_call(
-                src, f"{file_mappings_dir}/{os.path.basename(src)}"
+                src, os.path.join(file_mappings_dir, os.path.basename(src))
             )
 
         # Verify subprocess.Popen("./run_container.sh")
