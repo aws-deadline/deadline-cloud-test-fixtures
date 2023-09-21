@@ -498,7 +498,7 @@ class TestJob:
                 "manifests": [
                     {
                         "rootPath": "/root",
-                        "osType": "linux",
+                        "rootPathFormat": "posix",
                     },
                 ],
                 "assetLoadingMethod": "PRELOAD",
