@@ -104,7 +104,10 @@ def deadline_client(
     if endpoint_url:
         LOG.info(f"Using Amazon Deadline Cloud endpoint: {endpoint_url}")
 
-    return DeadlineClient(boto3.client("deadline", endpoint_url=endpoint_url))
+    session = boto3.Session()
+    session._loader.search_paths.extend([install_service_model])
+
+    return DeadlineClient(session.client("deadline", endpoint_url=endpoint_url))
 
 
 @pytest.fixture(scope="session")
@@ -160,11 +163,11 @@ def service_model() -> Generator[ServiceModel, None, None]:
 
 
 @pytest.fixture(scope="session")
-def install_service_model(service_model: ServiceModel) -> Generator[None, None, None]:
+def install_service_model(service_model: ServiceModel) -> Generator[str, None, None]:
     LOG.info("Installing service model and configuring boto to use it for API calls")
     with service_model.install() as model_path:
         LOG.info(f"Installed service model to {model_path}")
-        yield
+        yield model_path
 
 
 @pytest.fixture(scope="session")
