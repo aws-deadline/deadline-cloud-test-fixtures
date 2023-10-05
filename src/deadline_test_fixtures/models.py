@@ -103,7 +103,7 @@ class ServiceModel:
                 json_path.parent.mkdir(parents=True)
                 json_path.write_text(src_file.read_text())
                 os.environ["AWS_DATA_PATH"] = tmpdir
-                yield str(json_path)
+                yield str(tmpdir)
         finally:
             if old_aws_data_path:
                 os.environ["AWS_DATA_PATH"] = old_aws_data_path
