@@ -427,7 +427,7 @@ def worker(
     """
 
     worker: DeadlineWorker
-    if os.environ.get("USE_DOCKER_WORKER", False):
+    if os.environ.get("USE_DOCKER_WORKER", "").lower() == "true":
         LOG.info("Creating Docker worker")
         worker = DockerContainerWorker(
             configuration=worker_config,

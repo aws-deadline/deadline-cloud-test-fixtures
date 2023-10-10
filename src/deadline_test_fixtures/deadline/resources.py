@@ -8,6 +8,8 @@ from dataclasses import dataclass, fields
 from enum import Enum
 from typing import Any, Callable, Literal
 
+from botocore.client import BaseClient
+
 from .client import DeadlineClient
 from ..models import JobAttachmentSettings
 from ..util import call_api, clean_kwargs, wait_for
@@ -24,21 +26,23 @@ class Farm:
         *,
         client: DeadlineClient,
         display_name: str,
+        raw_kwargs: dict | None = None,
     ) -> Farm:
         response = call_api(
             description=f"Create farm {display_name}",
             fn=lambda: client.create_farm(
                 displayName=display_name,
+                **(raw_kwargs or {}),
             ),
         )
         farm_id = response["farmId"]
         LOG.info(f"Created farm: {farm_id}")
         return Farm(id=farm_id)
 
-    def delete(self, *, client: DeadlineClient) -> None:
+    def delete(self, *, client: DeadlineClient, raw_kwargs: dict | None = None) -> None:
         call_api(
             description=f"Delete farm {self.id}",
-            fn=lambda: client.delete_farm(farmId=self.id),
+            fn=lambda: client.delete_farm(farmId=self.id, **(raw_kwargs or {})),
         )
 
 
@@ -55,6 +59,7 @@ class Queue:
         farm: Farm,
         role_arn: str | None = None,
         job_attachments: JobAttachmentSettings | None = None,
+        raw_kwargs: dict | None = None,
     ) -> Queue:
         kwargs = clean_kwargs(
             {
@@ -64,6 +69,7 @@ class Queue:
                 "jobAttachmentSettings": (
                     job_attachments.as_queue_settings() if job_attachments else None
                 ),
+                **(raw_kwargs or {}),
             }
         )
 
@@ -79,10 +85,12 @@ class Queue:
             farm=farm,
         )
 
-    def delete(self, *, client: DeadlineClient) -> None:
+    def delete(self, *, client: DeadlineClient, raw_kwargs: dict | None = None) -> None:
         call_api(
             description=f"Delete queue {self.id}",
-            fn=lambda: client.delete_queue(queueId=self.id, farmId=self.farm.id),
+            fn=lambda: client.delete_queue(
+                queueId=self.id, farmId=self.farm.id, **(raw_kwargs or {})
+            ),
         )
 
 
@@ -99,6 +107,7 @@ class Fleet:
         farm: Farm,
         configuration: dict,
         role_arn: str | None = None,
+        raw_kwargs: dict | None = None,
     ) -> Fleet:
         kwargs = clean_kwargs(
             {
@@ -106,6 +115,7 @@ class Fleet:
                 "displayName": display_name,
                 "roleArn": role_arn,
                 "configuration": configuration,
+                **(raw_kwargs or {}),
             }
         )
         response = call_api(
@@ -127,12 +137,13 @@ class Fleet:
 
         return fleet
 
-    def delete(self, *, client: DeadlineClient) -> None:
+    def delete(self, *, client: DeadlineClient, raw_kwargs: dict | None = None) -> None:
         call_api(
             description=f"Delete fleet {self.id}",
             fn=lambda: client.delete_fleet(
                 farmId=self.farm.id,
                 fleetId=self.id,
+                **(raw_kwargs or {}),
             ),
         )
 
@@ -184,6 +195,7 @@ class QueueFleetAssociation:
         farm: Farm,
         queue: Queue,
         fleet: Fleet,
+        raw_kwargs: dict | None = None,
     ) -> QueueFleetAssociation:
         call_api(
             description=f"Create queue-fleet association for queue {queue.id} and fleet {fleet.id} in farm {farm.id}",
@@ -191,6 +203,7 @@ class QueueFleetAssociation:
                 farmId=farm.id,
                 queueId=queue.id,
                 fleetId=fleet.id,
+                **(raw_kwargs or {}),
             ),
         )
         return QueueFleetAssociation(
@@ -206,6 +219,7 @@ class QueueFleetAssociation:
         stop_mode: Literal[
             "STOP_SCHEDULING_AND_CANCEL_TASKS", "STOP_SCHEDULING_AND_FINISH_TASKS"
         ] = "STOP_SCHEDULING_AND_CANCEL_TASKS",
+        raw_kwargs: dict | None = None,
     ) -> None:
         self.stop(client=client, stop_mode=stop_mode)
         call_api(
@@ -214,6 +228,7 @@ class QueueFleetAssociation:
                 farmId=self.farm.id,
                 queueId=self.queue.id,
                 fleetId=self.fleet.id,
+                **(raw_kwargs or {}),
             ),
         )
 
@@ -336,6 +351,7 @@ class Job:
         target_task_run_status: str | None = None,
         max_failed_tasks_count: int | None = None,
         max_retries_per_task: int | None = None,
+        raw_kwargs: dict | None = None,
     ) -> Job:
         kwargs = clean_kwargs(
             {
@@ -349,6 +365,7 @@ class Job:
                 "targetTaskRunStatus": target_task_run_status,
                 "maxFailedTasksCount": max_failed_tasks_count,
                 "maxRetriesPerTask": max_retries_per_task,
+                **(raw_kwargs or {}),
             }
         )
         create_job_response = call_api(
@@ -379,6 +396,7 @@ class Job:
         farm: Farm,
         queue: Queue,
         job_id: str,
+        raw_kwargs: dict | None = None,
     ) -> dict[str, Any]:
         """
         Calls GetJob API and returns the parsed response, which can be used as
@@ -390,6 +408,7 @@ class Job:
                 farmId=farm.id,
                 queueId=queue.id,
                 jobId=job_id,
+                **(raw_kwargs or {}),
             ),
         )
 
@@ -435,6 +454,46 @@ class Job:
             "description": get_optional_field("description"),
         }
 
+    def get_logs(
+        self,
+        *,
+        deadline_client: DeadlineClient,
+        logs_client: BaseClient,
+    ) -> JobLogs:
+        """
+        Gets the logs for this Job.
+
+        Args:
+            deadline_client (DeadlineClient): The DeadlineClient to use
+            logs_client (BaseClient): The CloudWatch logs boto client to use
+
+        Returns:
+            JobLogs: The job logs
+        """
+        list_sessions_response = deadline_client.list_sessions(
+            farmId=self.farm.id,
+            queueId=self.queue.id,
+            jobId=self.id,
+        )
+        sessions = list_sessions_response["sessions"]
+
+        log_group_name = f"/aws/deadline/{self.farm.id}/{self.queue.id}"
+        session_log_map: dict[str, list[CloudWatchLogEvent]] = {}
+        for session in sessions:
+            session_id = session["sessionId"]
+            get_log_events_response = logs_client.get_log_events(
+                logGroupName=log_group_name,
+                logStreamName=session_id,
+            )
+            session_log_map[session_id] = [
+                CloudWatchLogEvent.from_api_response(le) for le in get_log_events_response["events"]
+            ]
+
+        return JobLogs(
+            log_group_name=log_group_name,
+            logs=session_log_map,
+        )
+
     def refresh_job_info(self, *, client: DeadlineClient) -> None:
         """
         Calls GetJob API to refresh job information. The result is used to update the fields
@@ -459,6 +518,7 @@ class Job:
         target_task_run_status: str | None = None,
         max_failed_tasks_count: int | None = None,
         max_retries_per_task: int | None = None,
+        raw_kwargs: dict | None = None,
     ) -> None:
         kwargs = clean_kwargs(
             {
@@ -466,6 +526,7 @@ class Job:
                 "targetTaskRunStatus": target_task_run_status,
                 "maxFailedTasksCount": max_failed_tasks_count,
                 "maxRetriesPerTask": max_retries_per_task,
+                **(raw_kwargs or {}),
             }
         )
         call_api(
@@ -553,4 +614,25 @@ class Job:
                 f"started_at: {self.started_at}",
                 f"ended_at: {self.ended_at}",
             ]
+        )
+
+
+@dataclass
+class JobLogs:
+    log_group_name: str
+    logs: dict[str, list[CloudWatchLogEvent]]
+
+
+@dataclass
+class CloudWatchLogEvent:
+    ingestion_time: int
+    message: str
+    timestamp: int
+
+    @staticmethod
+    def from_api_response(response: dict) -> CloudWatchLogEvent:
+        return CloudWatchLogEvent(
+            ingestion_time=response["ingestionTime"],
+            message=response["message"],
+            timestamp=response["timestamp"],
         )

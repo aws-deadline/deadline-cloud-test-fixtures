@@ -1,5 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 from .deadline import (
+    CloudWatchLogEvent,
     CommandResult,
     DeadlineClient,
     DeadlineWorker,
@@ -10,6 +11,7 @@ from .deadline import (
     Farm,
     Fleet,
     PipInstall,
+    PosixUser,
     Queue,
     QueueFleetAssociation,
     TaskStatus,
@@ -34,6 +36,7 @@ from ._version import __version__ as version  # noqa
 
 __all__ = [
     "BootstrapResources",
+    "CloudWatchLogEvent",
     "CodeArtifactRepositoryInfo",
     "CommandResult",
     "DeadlineResources",
@@ -51,6 +54,7 @@ __all__ = [
     "JobAttachmentSettings",
     "JobAttachmentManager",
     "PipInstall",
+    "PosixUser",
     "S3Object",
     "ServiceModel",
     "StubDeadlineClient",

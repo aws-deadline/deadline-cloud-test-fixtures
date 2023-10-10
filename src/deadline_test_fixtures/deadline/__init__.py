@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 from .resources import (
+    CloudWatchLogEvent,
     Farm,
     Fleet,
     Job,
@@ -16,9 +17,11 @@ from .worker import (
     DockerContainerWorker,
     EC2InstanceWorker,
     PipInstall,
+    PosixUser,
 )
 
 __all__ = [
+    "CloudWatchLogEvent",
     "CommandResult",
     "DeadlineClient",
     "DeadlineWorker",
@@ -29,6 +32,7 @@ __all__ = [
     "Fleet",
     "Job",
     "PipInstall",
+    "PosixUser",
     "Queue",
     "QueueFleetAssociation",
     "TaskStatus",
