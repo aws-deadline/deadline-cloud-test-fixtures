@@ -19,6 +19,7 @@ from deadline_test_fixtures import (
     TaskStatus,
 )
 from deadline_test_fixtures.deadline import resources as mod
+from deadline_test_fixtures.models import JobRunAsUser, PosixSessionUser
 
 
 @pytest.fixture(autouse=True)
@@ -97,6 +98,7 @@ class TestQueue:
         job_attachments = JobAttachmentSettings(bucket_name="bucket", root_prefix="root")
         mock_client = MagicMock()
         mock_client.create_queue.return_value = {"queueId": queue_id}
+        job_run_as_user = JobRunAsUser(posix=PosixSessionUser(user="test-user", group="test-group"))
 
         # WHEN
         result = Queue.create(
@@ -105,6 +107,7 @@ class TestQueue:
             farm=farm,
             role_arn=role_arn,
             job_attachments=job_attachments,
+            job_run_as_user=job_run_as_user,
         )
 
         # THEN
@@ -114,6 +117,7 @@ class TestQueue:
             farmId=farm.id,
             roleArn=role_arn,
             jobAttachmentSettings=job_attachments.as_queue_settings(),
+            jobRunAsUser=job_run_as_user,
         )
 
     def test_delete(self, queue: Queue) -> None:
