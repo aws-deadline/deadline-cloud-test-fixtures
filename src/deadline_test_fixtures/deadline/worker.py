@@ -33,6 +33,7 @@ def configure_worker_command(*, config: DeadlineWorkerConfiguration) -> str:  # 
     """Get the command to configure the Worker. This must be run as root."""
     cmds = [
         config.worker_agent_install.install_command,
+        *(config.pre_install_commands or []),
         # fmt: off
         (
             "install-deadline-worker "
@@ -44,6 +45,7 @@ def configure_worker_command(*, config: DeadlineWorkerConfiguration) -> str:  # 
             + f"--group {config.group} "
             + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
             + f"{'--no-install-service ' if config.no_install_service else ''}"
+            + f"{'--start ' if config.start_service else ''}"
         ),
         # fmt: on
     ]
@@ -109,6 +111,12 @@ class CommandResult:  # pragma: no cover
 
 
 @dataclass(frozen=True)
+class PosixUser:
+    user: str
+    group: str
+
+
+@dataclass(frozen=True)
 class DeadlineWorkerConfiguration:
     farm_id: str
     fleet_id: str
@@ -117,10 +125,14 @@ class DeadlineWorkerConfiguration:
     group: str
     allow_shutdown: bool
     worker_agent_install: PipInstall
+    job_users: list[PosixUser] = field(default_factory=lambda: [PosixUser("jobuser", "jobuser")])
+    start_service: bool = False
     no_install_service: bool = False
     service_model: ServiceModel | None = None
     file_mappings: list[tuple[str, str]] | None = None
     """Mapping of files to copy from host environment to worker environment"""
+    pre_install_commands: list[str] | None = None
+    """Commands to run before installing the Worker agent"""
 
 
 @dataclass
@@ -272,6 +284,26 @@ class EC2InstanceWorker(DeadlineWorker):
                 ]
             )
 
+        job_users_cmds = []
+        for job_user in self.configuration.job_users:
+            job_users_cmds.append(f"groupadd {job_user.group}")
+            job_users_cmds.append(
+                f"useradd --create-home --system --shell=/bin/bash --groups={self.configuration.group} -g {job_user.group} {job_user.user}"
+            )
+            job_users_cmds.append(f"usermod -a -G {job_user.group} {self.configuration.user}")
+
+        sudoer_rule_users = ",".join(
+            [
+                self.configuration.user,
+                *[job_user.user for job_user in self.configuration.job_users],
+            ]
+        )
+        job_users_cmds.append(
+            f'echo "{self.configuration.user} ALL=({sudoer_rule_users}) NOPASSWD: ALL" > /etc/sudoers.d/{self.configuration.user}'
+        )
+
+        configure_job_users = "\n".join(job_users_cmds)
+
         LOG.info("Launching EC2 instance")
         run_instance_response = self.ec2_client.run_instances(
             MinCount=1,
@@ -297,8 +329,8 @@ class EC2InstanceWorker(DeadlineWorker):
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 set -x
 groupadd --system {self.configuration.group}
-useradd --create-home --system --shell=/bin/bash --groups={self.configuration.group} jobuser
 useradd --create-home --system --shell=/bin/bash --groups={self.configuration.group} {self.configuration.user}
+{configure_job_users}
 {copy_s3_command}
 
 runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv && echo ". $HOME/.venv/bin/activate" >> $HOME/.bashrc'
@@ -386,12 +418,18 @@ class DockerContainerWorker(DeadlineWorker):
     def start(self) -> None:
         self._tmpdir = pathlib.Path(tempfile.mkdtemp())
 
+        # TODO: Support multiple job users on Docker
+        assert (
+            len(self.configuration.job_users) == 1
+        ), f"Multiple job users not supported on Docker worker: {self.configuration.job_users}"
         # Environment variables for "run_container.sh"
         run_container_env = {
             **os.environ,
+            "FARM_ID": self.configuration.farm_id,
+            "FLEET_ID": self.configuration.fleet_id,
             "AGENT_USER": self.configuration.user,
             "SHARED_GROUP": self.configuration.group,
-            "JOB_USER": "jobuser",
+            "JOB_USER": self.configuration.job_users[0].user,
             "CONFIGURE_WORKER_AGENT_CMD": configure_worker_command(
                 config=self.configuration,
             ),

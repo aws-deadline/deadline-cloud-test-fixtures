@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from deadline_test_fixtures import (
+    CloudWatchLogEvent,
     Farm,
     Queue,
     Fleet,
@@ -640,3 +641,92 @@ class TestJob:
         # THEN
         assert mock_client.get_job.call_count == 2
         assert job.task_run_status == "FAILED"
+
+    def test_get_logs(self, job: Job) -> None:
+        # GIVEN
+        mock_deadline_client = MagicMock()
+        mock_deadline_client.list_sessions.side_effect = [
+            {
+                "sessions": [
+                    {"sessionId": "session-1"},
+                ],
+                "nextToken": "1",
+            },
+            {
+                "sessions": [
+                    {"sessionId": "session-2"},
+                ],
+            },
+        ]
+        mock_logs_client = MagicMock()
+        log_events: list = [
+            {
+                "events": [
+                    {
+                        "ingestionTime": 123,
+                        "timestamp": 321,
+                        "message": "test",
+                    }
+                ],
+                "nextToken": "a",
+            },
+            {
+                "events": [
+                    {
+                        "ingestionTime": 123123,
+                        "timestamp": 321321,
+                        "message": "testtest",
+                    }
+                ],
+            },
+        ]
+        mock_logs_paginator = mock_logs_client.get_paginator.return_value
+        mock_logs_paginator.paginate.return_value.build_full_result.side_effect = log_events
+
+        # WHEN
+        job_logs = job.get_logs(
+            deadline_client=mock_deadline_client,
+            logs_client=mock_logs_client,
+        )
+
+        # THEN
+        mock_deadline_client.list_sessions.assert_has_calls(
+            [
+                call(
+                    farmId=job.farm.id,
+                    queueId=job.queue.id,
+                    jobId=job.id,
+                ),
+                call(
+                    farmId=job.farm.id,
+                    queueId=job.queue.id,
+                    jobId=job.id,
+                    nextToken="1",
+                ),
+            ]
+        )
+        mock_logs_client.get_paginator.assert_called_once_with("filter_log_events")
+        mock_logs_paginator.paginate.assert_has_calls(
+            [
+                call(
+                    logGroupName=f"/aws/deadline/{job.farm.id}/{job.queue.id}",
+                    logStreamNames=["session-1"],
+                ),
+                call().build_full_result(),
+                call(
+                    logGroupName=f"/aws/deadline/{job.farm.id}/{job.queue.id}",
+                    logStreamNames=["session-2"],
+                ),
+                call().build_full_result(),
+            ]
+        )
+
+        session_log_map = job_logs.logs
+        assert "session-1" in session_log_map
+        assert session_log_map["session-1"] == [
+            CloudWatchLogEvent.from_api_response(le) for le in log_events[0]["events"]
+        ]
+        assert "session-2" in session_log_map
+        assert session_log_map["session-2"] == [
+            CloudWatchLogEvent.from_api_response(le) for le in log_events[1]["events"]
+        ]
