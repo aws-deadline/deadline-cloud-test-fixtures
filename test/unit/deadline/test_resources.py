@@ -2,7 +2,7 @@
 
 import datetime
 import json
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any, Generator, cast
 from unittest.mock import MagicMock, call, patch
 
@@ -117,7 +117,7 @@ class TestQueue:
             farmId=farm.id,
             roleArn=role_arn,
             jobAttachmentSettings=job_attachments.as_queue_settings(),
-            jobRunAsUser=job_run_as_user,
+            jobRunAsUser=asdict(job_run_as_user),
         )
 
     def test_delete(self, queue: Queue) -> None:

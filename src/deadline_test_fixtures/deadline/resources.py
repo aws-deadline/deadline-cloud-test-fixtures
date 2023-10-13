@@ -4,7 +4,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from typing import Any, Callable, Literal, TYPE_CHECKING
 
@@ -73,7 +73,7 @@ class Queue:
                 "jobAttachmentSettings": (
                     job_attachments.as_queue_settings() if job_attachments else None
                 ),
-                "jobRunAsUser": job_run_as_user,
+                "jobRunAsUser": asdict(job_run_as_user),
                 **(raw_kwargs or {}),
             }
         )

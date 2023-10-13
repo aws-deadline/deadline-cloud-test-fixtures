@@ -11,7 +11,6 @@ from .deadline import (
     Farm,
     Fleet,
     PipInstall,
-    PosixUser,
     Queue,
     QueueFleetAssociation,
     TaskStatus,
@@ -29,6 +28,8 @@ from .job_attachment_manager import JobAttachmentManager
 from .models import (
     CodeArtifactRepositoryInfo,
     JobAttachmentSettings,
+    JobRunAsUser,
+    PosixSessionUser,
     S3Object,
     ServiceModel,
 )
@@ -53,8 +54,9 @@ __all__ = [
     "Job",
     "JobAttachmentSettings",
     "JobAttachmentManager",
+    "JobRunAsUser",
     "PipInstall",
-    "PosixUser",
+    "PosixSessionUser",
     "S3Object",
     "ServiceModel",
     "StubDeadlineClient",
