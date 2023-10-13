@@ -31,6 +31,8 @@ from .deadline.worker import (
 from .models import (
     CodeArtifactRepositoryInfo,
     JobAttachmentSettings,
+    JobRunAsUser,
+    PosixSessionUser,
     ServiceModel,
     S3Object,
 )
@@ -51,6 +53,10 @@ class BootstrapResources:
     job_attachments: JobAttachmentSettings | None = field(init=False, default=None)
     job_attachments_bucket_name: InitVar[str | None] = None
     job_attachments_root_prefix: InitVar[str | None] = None
+
+    job_run_as_user: JobRunAsUser = field(
+        default_factory=lambda: JobRunAsUser(PosixSessionUser("", ""))
+    )
 
     def __post_init__(
         self,
@@ -284,6 +290,7 @@ def deadline_resources(
             farm=farm,
             job_attachments=bootstrap_resources.job_attachments,
             role_arn=bootstrap_resources.session_role_arn,
+            job_run_as_user=bootstrap_resources.job_run_as_user,
         )
         fleet = Fleet.create(
             client=deadline_client,

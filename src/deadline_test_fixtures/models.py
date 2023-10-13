@@ -26,6 +26,17 @@ class JobAttachmentSettings:
 
 
 @dataclass(frozen=True)
+class PosixSessionUser:
+    user: str
+    group: str
+
+
+@dataclass(frozen=True)
+class JobRunAsUser:
+    posix: PosixSessionUser
+
+
+@dataclass(frozen=True)
 class CodeArtifactRepositoryInfo:
     region: str
     domain: str

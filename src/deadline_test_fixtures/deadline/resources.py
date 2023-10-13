@@ -11,7 +11,7 @@ from typing import Any, Callable, Literal, TYPE_CHECKING
 from botocore.client import BaseClient
 
 from .client import DeadlineClient
-from ..models import JobAttachmentSettings
+from ..models import JobAttachmentSettings, JobRunAsUser
 from ..util import call_api, clean_kwargs, wait_for
 
 if TYPE_CHECKING:
@@ -62,6 +62,7 @@ class Queue:
         farm: Farm,
         role_arn: str | None = None,
         job_attachments: JobAttachmentSettings | None = None,
+        job_run_as_user: JobRunAsUser,
         raw_kwargs: dict | None = None,
     ) -> Queue:
         kwargs = clean_kwargs(
@@ -72,6 +73,7 @@ class Queue:
                 "jobAttachmentSettings": (
                     job_attachments.as_queue_settings() if job_attachments else None
                 ),
+                "jobRunAsUser": job_run_as_user,
                 **(raw_kwargs or {}),
             }
         )
