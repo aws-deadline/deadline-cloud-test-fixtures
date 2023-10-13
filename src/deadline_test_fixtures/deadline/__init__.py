@@ -17,7 +17,6 @@ from .worker import (
     DockerContainerWorker,
     EC2InstanceWorker,
     PipInstall,
-    PosixUser,
 )
 
 __all__ = [
@@ -32,7 +31,6 @@ __all__ = [
     "Fleet",
     "Job",
     "PipInstall",
-    "PosixUser",
     "Queue",
     "QueueFleetAssociation",
     "TaskStatus",

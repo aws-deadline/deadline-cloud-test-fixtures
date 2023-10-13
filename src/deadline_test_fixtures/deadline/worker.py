@@ -19,7 +19,11 @@ from dataclasses import dataclass, field, InitVar, replace
 from typing import Any, ClassVar, Optional, cast
 
 from .client import DeadlineClient
-from ..models import PipInstall, ServiceModel
+from ..models import (
+    PipInstall,
+    PosixSessionUser,
+    ServiceModel,
+)
 from ..util import call_api, wait_for
 
 LOG = logging.getLogger(__name__)
@@ -111,12 +115,6 @@ class CommandResult:  # pragma: no cover
 
 
 @dataclass(frozen=True)
-class PosixUser:
-    user: str
-    group: str
-
-
-@dataclass(frozen=True)
 class DeadlineWorkerConfiguration:
     farm_id: str
     fleet_id: str
@@ -125,7 +123,9 @@ class DeadlineWorkerConfiguration:
     group: str
     allow_shutdown: bool
     worker_agent_install: PipInstall
-    job_users: list[PosixUser] = field(default_factory=lambda: [PosixUser("jobuser", "jobuser")])
+    job_users: list[PosixSessionUser] = field(
+        default_factory=lambda: [PosixSessionUser("jobuser", "jobuser")]
+    )
     start_service: bool = False
     no_install_service: bool = False
     service_model: ServiceModel | None = None
