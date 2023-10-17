@@ -6,5 +6,5 @@ pytest-xdist ~= 3.3
 black ~= 23.9
 moto[all] ~= 4.2
 mypy == 1.5.1
-ruff ~= 0.0.288
+ruff ~= 0.1.0
 twine ~= 4.0
