@@ -149,6 +149,7 @@ class TestFleet:
                 farm=farm,
                 configuration=configuration,
                 role_arn=role_arn,
+                max_worker_count=1,
             )
 
         # THEN
@@ -158,6 +159,7 @@ class TestFleet:
             displayName=display_name,
             roleArn=role_arn,
             configuration=configuration,
+            maxWorkerCount=1,
         )
         mock_wait_for_desired_status.assert_called_once_with(
             client=mock_client,

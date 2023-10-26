@@ -60,9 +60,9 @@ class Queue:
         client: DeadlineClient,
         display_name: str,
         farm: Farm,
+        job_run_as_user: JobRunAsUser,
         role_arn: str | None = None,
         job_attachments: JobAttachmentSettings | None = None,
-        job_run_as_user: JobRunAsUser,
         raw_kwargs: dict | None = None,
     ) -> Queue:
         kwargs = clean_kwargs(
@@ -111,6 +111,8 @@ class Fleet:
         display_name: str,
         farm: Farm,
         configuration: dict,
+        max_worker_count: int,
+        min_worker_count: int | None = None,
         role_arn: str | None = None,
         raw_kwargs: dict | None = None,
     ) -> Fleet:
@@ -120,9 +122,12 @@ class Fleet:
                 "displayName": display_name,
                 "roleArn": role_arn,
                 "configuration": configuration,
+                "maxWorkerCount": max_worker_count,
                 **(raw_kwargs or {}),
             }
         )
+        if min_worker_count is not None:
+            kwargs["minWorkerCount"] = min_worker_count
         response = call_api(
             fn=lambda: client.create_fleet(**kwargs),
             description=f"Create fleet {display_name} in farm {farm.id}",
