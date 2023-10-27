@@ -11,8 +11,9 @@ import os
 import posixpath
 import pytest
 import tempfile
+from contextlib import ExitStack, contextmanager
 from dataclasses import InitVar, dataclass, field, fields, MISSING
-from typing import Any, Generator
+from typing import Any, Generator, TypeVar
 
 from .deadline.client import DeadlineClient
 from .deadline.resources import (
@@ -280,58 +281,77 @@ def deadline_resources(
     else:
         LOG.info("Deploying Deadline resources")
         bootstrap_resources: BootstrapResources = request.getfixturevalue("bootstrap_resources")
-        farm = Farm.create(
-            client=deadline_client,
-            display_name="test-scaffolding-farm",
-        )
-        queue = Queue.create(
-            client=deadline_client,
-            display_name="test-scaffolding-queue",
-            farm=farm,
-            job_attachments=bootstrap_resources.job_attachments,
-            role_arn=bootstrap_resources.session_role_arn,
-            job_run_as_user=bootstrap_resources.job_run_as_user,
-        )
-        fleet = Fleet.create(
-            client=deadline_client,
-            display_name="test-scaffolding-fleet",
-            farm=farm,
-            configuration={
-                "customerManaged": {
-                    "autoScalingConfiguration": {
-                        "mode": "NO_SCALING",
-                        "maxFleetSize": 1,
-                    },
-                    "workerRequirements": {
-                        "vCpuCount": {"min": 1},
-                        "memoryMiB": {"min": 1024},
-                        "osFamily": "linux",
-                        "cpuArchitectureType": "x86_64",
-                    },
-                },
-            },
-            role_arn=bootstrap_resources.worker_role_arn,
-        )
-        qfa = QueueFleetAssociation.create(
-            client=deadline_client,
-            farm=farm,
-            queue=queue,
-            fleet=fleet,
-        )
 
-        yield DeadlineResources(
-            farm_id=farm.id,
-            queue_id=queue.id,
-            fleet_id=fleet.id,
-            job_attachments_bucket=bootstrap_resources.job_attachments.bucket_name
-            if bootstrap_resources.job_attachments
-            else None,
-        )
+        # Define a context manager for robust cleanup of resources
+        T = TypeVar("T", Farm, Fleet, Queue, QueueFleetAssociation)
 
-        qfa.delete(client=deadline_client)
-        fleet.delete(client=deadline_client)
-        queue.delete(client=deadline_client)
-        farm.delete(client=deadline_client)
+        @contextmanager
+        def deletable(resource: T) -> Generator[T, None, None]:
+            yield resource
+            resource.delete(client=deadline_client)
+
+        with ExitStack() as context_stack:
+            farm = context_stack.enter_context(
+                deletable(
+                    Farm.create(
+                        client=deadline_client,
+                        display_name="test-scaffolding-farm",
+                    )
+                )
+            )
+            queue = context_stack.enter_context(
+                deletable(
+                    Queue.create(
+                        client=deadline_client,
+                        display_name="test-scaffolding-queue",
+                        farm=farm,
+                        job_attachments=bootstrap_resources.job_attachments,
+                        role_arn=bootstrap_resources.session_role_arn,
+                        job_run_as_user=bootstrap_resources.job_run_as_user,
+                    )
+                )
+            )
+            fleet = context_stack.enter_context(
+                deletable(
+                    Fleet.create(
+                        client=deadline_client,
+                        display_name="test-scaffolding-fleet",
+                        farm=farm,
+                        configuration={
+                            "customerManaged": {
+                                "mode": "NO_SCALING",
+                                "workerRequirements": {
+                                    "vCpuCount": {"min": 1},
+                                    "memoryMiB": {"min": 1024},
+                                    "osFamily": "linux",
+                                    "cpuArchitectureType": "x86_64",
+                                },
+                            },
+                        },
+                        max_worker_count=1,
+                        role_arn=bootstrap_resources.worker_role_arn,
+                    )
+                )
+            )
+            context_stack.enter_context(
+                deletable(
+                    QueueFleetAssociation.create(
+                        client=deadline_client,
+                        farm=farm,
+                        queue=queue,
+                        fleet=fleet,
+                    )
+                )
+            )
+
+            yield DeadlineResources(
+                farm_id=farm.id,
+                queue_id=queue.id,
+                fleet_id=fleet.id,
+                job_attachments_bucket=bootstrap_resources.job_attachments.bucket_name
+                if bootstrap_resources.job_attachments
+                else None,
+            )
 
 
 @pytest.fixture(scope="session")
