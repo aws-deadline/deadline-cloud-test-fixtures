@@ -7,8 +7,16 @@ name = "deadline-cloud-test-fixtures"
 dynamic = ["version"]
 requires-python = ">=3.7"
 
+# Note: All deps should be using >= since this is a *library*. Applications that
+# consume this library should be the ones that are more strictly limiting dependencies
+# if they want/need to.
 dependencies = [
-  "boto3 ~= 1.26",
+  "boto3 >= 1.28.78,<2.0",
+  # boto3 depends on botocore, but we're finding that if we leave botocore to be resolved
+  # transitively then resolving the dependency closure of this package in conjunction with
+  # other test dependencies in other packages can result in it taking 20+ minutes to resolve
+  # dependencies in Python3.9. So, we explicitly include the botocore dependency here.
+  "botocore >= 1.31.78"
 ]
 
 [project.entry-points.pytest11]
