@@ -165,6 +165,8 @@ class TestFleet:
             client=mock_client,
             desired_status="ACTIVE",
             allowed_statuses=set(["CREATE_IN_PROGRESS"]),
+            interval_s=10,
+            max_retries=6 * 5,  # 5 minutes for CMF fleet creation
         )
 
     def test_delete(self, fleet: Fleet) -> None:

@@ -143,6 +143,8 @@ class Fleet:
             client=client,
             desired_status="ACTIVE",
             allowed_statuses=set(["CREATE_IN_PROGRESS"]),
+            interval_s=10,
+            max_retries=6 * 5,  # 5 minutes to allow CMF fleet creation to complete
         )
 
         return fleet
