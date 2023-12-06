@@ -150,8 +150,12 @@ class WorkerBootstrapStack(CfnStack):  # pragma: no cover
                                 "Action": [
                                     "s3:HeadObject",
                                     "s3:GetObject",
+                                    "s3:ListBucket",
                                 ],
-                                "Resource": [self.bootstrap_bucket.arn_for_objects()],
+                                "Resource": [
+                                    self.bootstrap_bucket.arn,
+                                    self.bootstrap_bucket.arn_for_objects(),
+                                ],
                             },
                             # Allows access to code artifact
                             {

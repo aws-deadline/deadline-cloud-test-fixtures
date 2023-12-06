@@ -350,7 +350,7 @@ runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv
 
         LOG.info(f"Sending SSM command to configure Worker agent on instance {self.instance_id}")
         cmd_result = self.send_command(
-            f"cd /home/{self.configuration.user}; . .venv/bin/activate; {configure_worker_command(config=self.configuration)}"
+            f"cd /home/{self.configuration.user}; . .venv/bin/activate; AWS_DEFAULT_REGION={self.configuration.region} {configure_worker_command(config=self.configuration)}"
         )
         assert cmd_result.exit_code == 0, f"Failed to configure Worker agent: {cmd_result}"
         LOG.info("Successfully configured Worker agent")
