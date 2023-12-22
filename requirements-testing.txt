@@ -5,6 +5,6 @@ pytest-timeout == 2.2.*
 pytest-xdist == 3.5.*
 black == 23.12.*
 moto[cloudformation,s3] == 4.2.*
-mypy == 1.7.*
+mypy == 1.8.*
 ruff == 0.1.*
 twine == 4.0.*
