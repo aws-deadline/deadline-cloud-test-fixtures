@@ -342,7 +342,10 @@ runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv
 
         LOG.info(f"Waiting for EC2 instance {self.instance_id} status to be OK")
         instance_running_waiter = self.ec2_client.get_waiter("instance_status_ok")
-        instance_running_waiter.wait(InstanceIds=[self.instance_id])
+        instance_running_waiter.wait(
+            InstanceIds=[self.instance_id],
+            WaiterConfig={"Delay": 15, "MaxAttempts": 60},
+        )
         LOG.info(f"EC2 instance {self.instance_id} status is OK")
 
     def _start_worker_agent(self) -> None:  # pragma: no cover
