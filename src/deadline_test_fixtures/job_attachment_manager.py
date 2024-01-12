@@ -58,13 +58,17 @@ class JobAttachmentManager:
                 client=self.deadline_client,
                 display_name="job_attachments_test_queue",
                 farm=self.farm,
-                job_run_as_user=JobRunAsUser(PosixSessionUser("", "")),
+                job_run_as_user=JobRunAsUser(
+                    posix=PosixSessionUser("", ""), runAs="WORKER_AGENT_USER"
+                ),
             )
             self.queue_with_no_settings = Queue.create(
                 client=self.deadline_client,
                 display_name="job_attachments_test_no_settings_queue",
                 farm=self.farm,
-                job_run_as_user=JobRunAsUser(PosixSessionUser("", "")),
+                job_run_as_user=JobRunAsUser(
+                    posix=PosixSessionUser("", ""), runAs="WORKER_AGENT_USER"
+                ),
             )
             self.stack.deploy(cfn_client=self.cfn_client)
         except (ClientError, WaiterError):

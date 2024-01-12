@@ -10,7 +10,7 @@ from abc import ABC, abstractproperty
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator
+from typing import Generator, Literal
 
 
 @dataclass(frozen=True)
@@ -34,6 +34,7 @@ class PosixSessionUser:
 @dataclass(frozen=True)
 class JobRunAsUser:
     posix: PosixSessionUser
+    runAs: Literal["QUEUE_CONFIGURED_USER", "WORKER_AGENT_USER"]
 
 
 @dataclass(frozen=True)
