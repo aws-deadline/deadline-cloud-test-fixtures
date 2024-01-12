@@ -98,7 +98,10 @@ class TestQueue:
         job_attachments = JobAttachmentSettings(bucket_name="bucket", root_prefix="root")
         mock_client = MagicMock()
         mock_client.create_queue.return_value = {"queueId": queue_id}
-        job_run_as_user = JobRunAsUser(posix=PosixSessionUser(user="test-user", group="test-group"))
+        job_run_as_user = JobRunAsUser(
+            posix=PosixSessionUser(user="test-user", group="test-group"),
+            runAs="QUEUE_CONFIGURED_USER",
+        )
 
         # WHEN
         result = Queue.create(
