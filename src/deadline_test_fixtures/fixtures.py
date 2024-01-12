@@ -289,8 +289,10 @@ def deadline_resources(
 
         @contextmanager
         def deletable(resource: T) -> Generator[T, None, None]:
-            yield resource
-            resource.delete(client=deadline_client)
+            try:
+                yield resource
+            finally:
+                resource.delete(client=deadline_client)
 
         with ExitStack() as context_stack:
             farm = context_stack.enter_context(
