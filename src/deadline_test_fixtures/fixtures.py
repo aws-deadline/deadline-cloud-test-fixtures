@@ -56,7 +56,9 @@ class BootstrapResources:
     job_attachments_root_prefix: InitVar[str | None] = None
 
     job_run_as_user: JobRunAsUser = field(
-        default_factory=lambda: JobRunAsUser(PosixSessionUser("", ""))
+        default_factory=lambda: JobRunAsUser(
+            posix=PosixSessionUser("", ""), runAs="WORKER_AGENT_USER"
+        )
     )
 
     def __post_init__(
