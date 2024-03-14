@@ -111,7 +111,7 @@ def deadline_client(
 ) -> DeadlineClient:
     endpoint_url = os.getenv("DEADLINE_ENDPOINT")
     if endpoint_url:
-        LOG.info(f"Using Amazon Deadline Cloud endpoint: {endpoint_url}")
+        LOG.info(f"Using AWS Deadline Cloud endpoint: {endpoint_url}")
 
     session = boto3.Session()
     session._loader.search_paths.extend([install_service_model])
