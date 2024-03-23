@@ -324,7 +324,7 @@ def deadline_resources(
                         configuration={
                             "customerManaged": {
                                 "mode": "NO_SCALING",
-                                "workerRequirements": {
+                                "workerCapabilities": {
                                     "vCpuCount": {"min": 1},
                                     "memoryMiB": {"min": 1024},
                                     "osFamily": "linux",
@@ -352,9 +352,11 @@ def deadline_resources(
                 farm_id=farm.id,
                 queue_id=queue.id,
                 fleet_id=fleet.id,
-                job_attachments_bucket=bootstrap_resources.job_attachments.bucket_name
-                if bootstrap_resources.job_attachments
-                else None,
+                job_attachments_bucket=(
+                    bootstrap_resources.job_attachments.bucket_name
+                    if bootstrap_resources.job_attachments
+                    else None
+                ),
             )
 
 
