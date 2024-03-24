@@ -36,6 +36,24 @@ class DeadlineClient:
             and "workeRoleArn" in create_fleet_input_members
         ):
             kwargs["workerRoleArn"] = kwargs.pop("roleArn")
+
+        if "configuration" in create_fleet_input_members:
+            customer_managed_members = (
+                create_fleet_input_members["configuration"].members["customerManaged"].members
+            )
+
+            if (
+                "workerCapabilities" not in customer_managed_members
+                and "workerRequirements" in customer_managed_members
+            ):
+                if (
+                    "customerManaged" in kwargs["configuration"]
+                    and "workerCapabilities" in kwargs["configuration"]["customerManaged"]
+                ):
+                    kwargs["configuration"]["customerManaged"]["workerRequirements"] = kwargs[
+                        "configuration"
+                    ]["customerManaged"].pop("workerCapabilities")
+
         return self._real_client.create_fleet(*args, **kwargs)
 
     def get_fleet(self, *args, **kwargs) -> Any:
