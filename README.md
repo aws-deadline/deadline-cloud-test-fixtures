@@ -1,6 +1,6 @@
-# Deadline Cloud Test Fixtures
+# AWS Deadline Cloud Test Fixtures
 
-This package contains pytest fixtures that are used to test Deadline Cloud Python packages.
+This package contains pytest fixtures that are used to test AWS Deadline Cloud Python packages.
 
 ## Usage
 

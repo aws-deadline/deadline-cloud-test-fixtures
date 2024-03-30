@@ -175,9 +175,9 @@ class Bucket(CfnResource):  # pragma: no cover
         logging_config = (
             clean_kwargs(
                 {
-                    "DestinationBucketName": logging.destination_bucket.ref
-                    if logging.destination_bucket
-                    else None,
+                    "DestinationBucketName": (
+                        logging.destination_bucket.ref if logging.destination_bucket else None
+                    ),
                     "LogFilePrefix": logging.log_file_prefix,
                 }
             )
