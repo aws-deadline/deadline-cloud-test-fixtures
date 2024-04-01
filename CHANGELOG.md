@@ -1,3 +1,9 @@
+## 0.6.1 (2024-04-01)
+
+### CI
+* fixed ci publishing issue 
+
+
 ## 0.6.0 (2024-04-01)
 
 ### BREAKING CHANGES
