@@ -9,6 +9,8 @@ authors = [
   {name = "Amazon Web Services"},
 ]
 dynamic = ["version"]
+license = "Apache-2.0"
+readme = "README.md"
 requires-python = ">=3.9"
 # https://pypi.org/classifiers/
 classifiers = [
