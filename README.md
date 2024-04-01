@@ -1,6 +1,11 @@
-# Deadline Cloud Test Fixtures
+[![pypi](https://img.shields.io/pypi/v/deadline-cloud-test-fixtures.svg?style=flat)](https://pypi.python.org/pypi/deadline-cloud-test-fixtures)
+[![python](https://img.shields.io/pypi/pyversions/deadline-cloud-test-fixtures.svg?style=flat)](https://pypi.python.org/pypi/deadline-cloud-test-fixtures)
+[![license](https://img.shields.io/pypi/l/deadline-cloud-test-fixtures.svg?style=flat)](https://github.com/aws-deadline/deadline-cloud-test-fixtures/blob/mainline/LICENSE)
 
-This package contains pytest fixtures that are used to test Deadline Cloud Python packages.
+
+# AWS Deadline Cloud test fixtures
+
+This package contains pytest fixtures that are used to test AWS Deadline Cloud python packages.
 
 ## Usage
 
@@ -129,4 +134,3 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 ## License
 
 This project is licensed under the Apache-2.0 License.
-
