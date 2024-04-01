@@ -4,9 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deadline-cloud-test-fixtures"
-dynamic = ["version"]
-requires-python = ">=3.7"
 description = "This package contains pytest fixtures that are used to test AWS Deadline Cloud Python packages."
+authors = [
+  {name = "Amazon Web Services"},
+]
+dynamic = ["version"]
+requires-python = ">=3.9"
 # https://pypi.org/classifiers/
 classifiers = [
   "Development Status :: 5 - Production/Stable",
@@ -34,6 +37,10 @@ dependencies = [
   # dependencies in Python3.9. So, we explicitly include the botocore dependency here.
   "botocore >= 1.31.78"
 ]
+
+[project.urls]
+Homepage = "https://github.com/aws-deadline/deadline-cloud-test-fixtures"
+Source = "https://github.com/aws-deadline/deadline-cloud-test-fixtures"
 
 [project.entry-points.pytest11]
 deadline_test_fixtures = "deadline_test_fixtures.fixtures"
