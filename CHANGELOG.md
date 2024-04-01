@@ -1,3 +1,10 @@
+## 0.6.0 (2024-04-01)
+
+### BREAKING CHANGES
+* public release (#83) ([`e114779`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/e1147791d2a80ea60acb2f18eff9de350756ab59))
+
+
+
 ## 0.5.6 (2024-03-24)
 
 
