@@ -362,7 +362,7 @@ runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv
         cmd_result = self.send_command(
             " && ".join(
                 [
-                    f"nohup runuser --login {self.configuration.user} -c 'AWS_DEFAULT_REGION={self.configuration.region} deadline-worker-agent --allow-instance-profile >/dev/null 2>&1 &'",
+                    f"nohup runuser --login {self.configuration.user} -c 'AWS_DEFAULT_REGION={self.configuration.region} deadline-worker-agent > /tmp/worker-agent-stdout.txt 2>&1 &'",
                     # Verify Worker is still running
                     "echo Waiting 5s for agent to get started",
                     "sleep 5",
