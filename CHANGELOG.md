@@ -1,3 +1,10 @@
+## 0.6.2 (2024-04-02)
+
+
+
+### Bug Fixes
+* stop using removed worker agent CLI argument (#93) ([`f831b92`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/f831b921aa1090f175466e84c9f2d192ae275533))
+
 ## 0.6.1 (2024-04-01)
 
 ### CI
