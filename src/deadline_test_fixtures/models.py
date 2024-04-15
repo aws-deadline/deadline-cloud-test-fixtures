@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import re
@@ -10,7 +10,7 @@ from abc import ABC, abstractproperty
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Generator, Literal
+from typing import Any, Generator, Literal
 
 
 @dataclass(frozen=True)
@@ -87,33 +87,38 @@ class PathMappable(ABC):
 
 @dataclass(frozen=True)
 class ServiceModel:
-    file_path: str
-    api_version: str
-    service_name: str
+    model: dict[str, Any]
 
     @staticmethod
     def from_json_file(path: str) -> ServiceModel:
         with open(path) as f:
             model = json.load(f)
-        return ServiceModel(
-            file_path=path,
-            api_version=model["metadata"]["apiVersion"],
-            service_name=model["metadata"]["serviceId"],
-        )
+        return ServiceModel(model=model)
+
+    @staticmethod
+    def from_json_gz_file(path: str) -> ServiceModel:
+        with gzip.open(path, mode="r") as f:
+            model = json.load(f)
+        return ServiceModel(model=model)
 
     @contextmanager
-    def install(self) -> Generator[str, None, None]:
+    def install(self, region: str) -> Generator[str, None, None]:
         """
         Copies the model to a temporary directory in the structure expected by boto
         and sets the AWS_DATA_PATH environment variable to it
         """
         try:
             old_aws_data_path = os.environ.get("AWS_DATA_PATH")
-            src_file = Path(self.file_path)
+            old_endpoint_url = os.environ.get("AWS_ENDPOINT_URL_DEADLINE")
+
+            # Set endpoint URL
+            os.environ["AWS_ENDPOINT_URL_DEADLINE"] = self.endpoint_url_fmt_str.format(region)
+
+            # Install service model
             with tempfile.TemporaryDirectory() as tmpdir:
                 json_path = Path(tmpdir) / self.service_name / self.api_version / "service-2.json"
                 json_path.parent.mkdir(parents=True)
-                json_path.write_text(src_file.read_text())
+                json_path.write_text(json.dumps(self.model))
                 os.environ["AWS_DATA_PATH"] = tmpdir
                 yield str(tmpdir)
         finally:
@@ -121,19 +126,27 @@ class ServiceModel:
                 os.environ["AWS_DATA_PATH"] = old_aws_data_path
             else:
                 del os.environ["AWS_DATA_PATH"]
+            if old_endpoint_url:
+                os.environ["AWS_ENDPOINT_URL_DEADLINE"] = old_endpoint_url
+            else:
+                del os.environ["AWS_ENDPOINT_URL_DEADLINE"]
 
     @property
-    def install_command(self) -> str:
-        return " ".join(
-            [
-                "aws",
-                "configure",
-                "add-model",
-                "--service-model",
-                f"file://{self.file_path}",
-                *(["--service-name", self.service_name] if self.service_name else []),
-            ]
-        )
+    def api_version(self) -> str:
+        return self.model["metadata"]["apiVersion"]
+
+    @property
+    def service_name(self) -> str:
+        return self.model["metadata"]["serviceId"]
+
+    @property
+    def endpoint_prefix(self) -> str:
+        return self.model["metadata"]["endpointPrefix"]
+
+    @property
+    def endpoint_url_fmt_str(self) -> str:
+        """Format string for the service endpoint URL with one format field for the region"""
+        return f"https://{self.endpoint_prefix}.{{}}.amazonaws.com"
 
 
 @dataclass(frozen=True)

@@ -18,11 +18,9 @@ import time
 from dataclasses import dataclass, field, InitVar, replace
 from typing import Any, ClassVar, Optional, cast
 
-from .client import DeadlineClient
 from ..models import (
     PipInstall,
     PosixSessionUser,
-    ServiceModel,
 )
 from ..util import call_api, wait_for
 
@@ -54,9 +52,9 @@ def configure_worker_command(*, config: DeadlineWorkerConfiguration) -> str:  # 
         # fmt: on
     ]
 
-    if config.service_model:
+    if config.service_model_path:
         cmds.append(
-            f"runuser -l {config.user} -s /bin/bash -c '{config.service_model.install_command}'"
+            f"runuser -l {config.user} -s /bin/bash -c 'aws configure add-model --service-model file://{config.service_model_path}'"
         )
 
     return " && ".join(cmds)
@@ -128,7 +126,7 @@ class DeadlineWorkerConfiguration:
     )
     start_service: bool = False
     no_install_service: bool = False
-    service_model: ServiceModel | None = None
+    service_model_path: str | None = None
     file_mappings: list[tuple[str, str]] | None = None
     """Mapping of files to copy from host environment to worker environment"""
     pre_install_commands: list[str] | None = None
@@ -146,7 +144,6 @@ class EC2InstanceWorker(DeadlineWorker):
     s3_client: botocore.client.BaseClient
     ec2_client: botocore.client.BaseClient
     ssm_client: botocore.client.BaseClient
-    deadline_client: DeadlineClient
     configuration: DeadlineWorkerConfiguration
 
     instance_id: Optional[str] = field(init=False, default=None)
