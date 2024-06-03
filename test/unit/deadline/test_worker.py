@@ -21,7 +21,6 @@ from deadline_test_fixtures import (
     EC2InstanceWorker,
     PipInstall,
     S3Object,
-    ServiceModel,
 )
 
 
@@ -59,11 +58,6 @@ def region(boto_config: dict[str, str]) -> str:
 
 
 @pytest.fixture
-def deadline_client() -> MagicMock:
-    return MagicMock()
-
-
-@pytest.fixture
 def worker_config(region: str) -> DeadlineWorkerConfiguration:
     return DeadlineWorkerConfiguration(
         farm_id="farm-123",
@@ -86,11 +80,7 @@ def worker_config(region: str) -> DeadlineWorkerConfiguration:
             ("/packages/manifest.json", "/tmp/manifest.json"),
             ("/aws/models/deadline.json", "/tmp/deadline.json"),
         ],
-        service_model=ServiceModel(
-            file_path="/tmp/deadline/1234-12-12/service-2.json",
-            api_version="1234-12-12",
-            service_name="deadline",
-        ),
+        service_model_path="/path/to/service-2.json",
     )
 
 
@@ -151,7 +141,6 @@ class TestEC2InstanceWorker:
     @pytest.fixture
     def worker(
         self,
-        deadline_client: MagicMock,
         worker_config: DeadlineWorkerConfiguration,
         subnet_id: str,
         security_group_id: str,
@@ -166,7 +155,6 @@ class TestEC2InstanceWorker:
             s3_client=boto3.client("s3"),
             ec2_client=boto3.client("ec2"),
             ssm_client=boto3.client("ssm"),
-            deadline_client=deadline_client,
             configuration=worker_config,
         )
 

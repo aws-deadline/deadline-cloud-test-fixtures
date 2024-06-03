@@ -6,8 +6,10 @@ import botocore.client
 import botocore.loaders
 import boto3
 import glob
+import json
 import logging
 import os
+import pathlib
 import posixpath
 import pytest
 import tempfile
@@ -142,6 +144,11 @@ def codeartifact() -> CodeArtifactRepositoryInfo:
 
 
 @pytest.fixture(scope="session")
+def region() -> str:
+    return os.getenv("REGION", os.getenv("AWS_DEFAULT_REGION", "us-west-2"))
+
+
+@pytest.fixture(scope="session")
 def service_model() -> Generator[ServiceModel, None, None]:
     service_model_s3_uri = os.getenv("DEADLINE_SERVICE_MODEL_S3_URI")
     local_model_path = os.getenv("LOCAL_MODEL_PATH")
@@ -168,15 +175,22 @@ def service_model() -> Generator[ServiceModel, None, None]:
         if not local_model_path:
             local_model_path = _find_latest_service_model_file("deadline")
         LOG.info(f"Using service model at: {local_model_path}")
-        yield ServiceModel.from_json_file(local_model_path)
+        if local_model_path.endswith(".json"):
+            yield ServiceModel.from_json_file(local_model_path)
+        elif local_model_path.endswith(".json.gz"):
+            yield ServiceModel.from_json_gz_file(local_model_path)
+        else:
+            raise RuntimeError(
+                f"Unsupported service model file format (must be .json or .json.gz): {local_model_path}"
+            )
 
 
 @pytest.fixture(scope="session")
-def install_service_model(service_model: ServiceModel) -> Generator[str, None, None]:
+def install_service_model(service_model: ServiceModel, region: str) -> Generator[str, None, None]:
     LOG.info("Installing service model and configuring boto to use it for API calls")
-    with service_model.install() as model_path:
-        LOG.info(f"Installed service model to {model_path}")
-        yield model_path
+    with service_model.install(region) as service_model_install:
+        LOG.info(f"Installed service model to {service_model_install}")
+        yield service_model_install
 
 
 @pytest.fixture(scope="session")
@@ -365,13 +379,12 @@ def worker_config(
     deadline_resources: DeadlineResources,
     codeartifact: CodeArtifactRepositoryInfo,
     service_model: ServiceModel,
-) -> DeadlineWorkerConfiguration:
+    region: str,
+) -> Generator[DeadlineWorkerConfiguration, None, None]:
     """
     Builds the configuration for a DeadlineWorker.
 
     Environment Variables:
-        WORKER_REGION: The AWS region to configure the worker for
-            Falls back to AWS_DEFAULT_REGION, then defaults to us-west-2
         WORKER_POSIX_USER: The POSIX user to configure the worker for
             Defaults to "deadline-worker"
         WORKER_POSIX_SHARED_GROUP: The shared POSIX group to configure the worker user and job user with
@@ -386,6 +399,12 @@ def worker_config(
         DeadlineWorkerConfiguration: Configuration for use by DeadlineWorker.
     """
     file_mappings: list[tuple[str, str]] = []
+
+    # Deprecated environment variable
+    if os.getenv("WORKER_REGION") is not None:
+        raise Exception(
+            "The environment variable WORKER_REGION is no longer supported. Please use REGION instead."
+        )
 
     # Prepare the Worker agent Python package
     worker_agent_whl_path = os.getenv("WORKER_AGENT_WHL_PATH")
@@ -410,35 +429,36 @@ def worker_config(
         LOG.info(f"Using Worker agent package {worker_agent_requirement_specifier}")
 
     # Path map the service model
-    dst_path = posixpath.join("/tmp", "deadline-cloud-service-model.json")
-    path_mapped_model = ServiceModel(
-        file_path=dst_path,
-        api_version=service_model.api_version,
-        service_name=service_model.service_name,
-    )
-    LOG.info(f"The service model will be copied to {dst_path} on the Worker environment")
-    file_mappings.append((service_model.file_path, dst_path))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        src_path = pathlib.Path(tmpdir) / f"{service_model.service_name}-service-2.json"
 
-    return DeadlineWorkerConfiguration(
-        farm_id=deadline_resources.farm.id,
-        fleet_id=deadline_resources.fleet.id,
-        region=os.getenv("WORKER_REGION", os.getenv("AWS_DEFAULT_REGION", "us-west-2")),
-        user=os.getenv("WORKER_POSIX_USER", "deadline-worker"),
-        group=os.getenv("WORKER_POSIX_SHARED_GROUP", "shared-group"),
-        allow_shutdown=True,
-        worker_agent_install=PipInstall(
-            requirement_specifiers=[worker_agent_requirement_specifier],
-            codeartifact=codeartifact,
-        ),
-        service_model=path_mapped_model,
-        file_mappings=file_mappings or None,
-    )
+        LOG.info(f"Staging service model to {src_path} for uploading to S3")
+        with src_path.open(mode="w") as f:
+            json.dump(service_model.model, f)
+
+        dst_path = posixpath.join("/tmp", src_path.name)
+        LOG.info(f"The service model will be copied to {dst_path} on the Worker environment")
+        file_mappings.append((str(src_path), dst_path))
+
+        yield DeadlineWorkerConfiguration(
+            farm_id=deadline_resources.farm.id,
+            fleet_id=deadline_resources.fleet.id,
+            region=region,
+            user=os.getenv("WORKER_POSIX_USER", "deadline-worker"),
+            group=os.getenv("WORKER_POSIX_SHARED_GROUP", "shared-group"),
+            allow_shutdown=True,
+            worker_agent_install=PipInstall(
+                requirement_specifiers=[worker_agent_requirement_specifier],
+                codeartifact=codeartifact,
+            ),
+            service_model_path=dst_path,
+            file_mappings=file_mappings or None,
+        )
 
 
 @pytest.fixture(scope="session")
 def worker(
     request: pytest.FixtureRequest,
-    deadline_client: DeadlineClient,
     worker_config: DeadlineWorkerConfiguration,
 ) -> Generator[DeadlineWorker, None, None]:
     """
@@ -484,7 +504,6 @@ def worker(
 
         worker = EC2InstanceWorker(
             ec2_client=ec2_client,
-            deadline_client=deadline_client,
             s3_client=s3_client,
             bootstrap_bucket_name=bootstrap_resources.bootstrap_bucket_name,
             ssm_client=ssm_client,
@@ -496,6 +515,11 @@ def worker(
         )
 
     def stop_worker():
+        if request.session.testsfailed > 0:
+            if os.getenv("KEEP_WORKER_AFTER_FAILURE", "false").lower() == "true":
+                LOG.info("KEEP_WORKER_AFTER_FAILURE is set, not stopping worker")
+                return
+
         try:
             worker.stop()
         except Exception as e:
@@ -509,9 +533,8 @@ def worker(
         worker.start()
     except Exception as e:
         LOG.exception(f"Failed to start worker: {e}")
-        if os.getenv("KEEP_WORKER_AFTER_FAILURE", "false").lower() != "true":
-            LOG.info("Stopping worker because it failed to start")
-            stop_worker()
+        LOG.info("Stopping worker because it failed to start")
+        stop_worker()
         raise
 
     yield worker
@@ -550,4 +573,9 @@ def _find_latest_service_model_file(service_name: str) -> str:
         service_name, loader.determine_latest_version(service_name, "service-2"), "service-2"
     )
     _, service_model_path = loader.load_data_with_path(full_name)
-    return f"{service_model_path}.json"
+    service_model_files = glob.glob(f"{service_model_path}.*")
+    if len(service_model_files) > 1:
+        raise RuntimeError(
+            f"Expected exactly one file to match glob '{service_model_path}.*, but got: {service_model_files}"
+        )
+    return service_model_files[0]

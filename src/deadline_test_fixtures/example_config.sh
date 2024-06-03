@@ -30,6 +30,10 @@ export CODEARTIFACT_REGION
 
 # --- OPTIONAL --- #
 
+# The AWS region to use
+# Falls back to AWS_DEFAULT_REGION, then defaults to us-west-2
+export REGION
+
 # Extra local path for boto to look for AWS models in
 # Does not apply to the worker
 export AWS_DATA_PATH
@@ -38,9 +42,10 @@ export AWS_DATA_PATH
 # Default is to pip install the latest "deadline-cloud-worker-agent" package
 export WORKER_AGENT_WHL_PATH
 
+# DEPRECATED: Use REGION instead
 # The AWS region to configure the worker for
 # Falls back to AWS_DEFAULT_REGION, then defaults to us-west-2
-export WORKER_REGION
+# export WORKER_REGION
 
 # The POSIX user to configure the worker for
 # Defaults to "deadline-worker"
