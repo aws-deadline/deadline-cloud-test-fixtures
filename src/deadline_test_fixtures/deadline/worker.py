@@ -57,6 +57,13 @@ def configure_worker_command(*, config: DeadlineWorkerConfiguration) -> str:  # 
             f"runuser -l {config.user} -s /bin/bash -c 'aws configure add-model --service-model file://{config.service_model_path}'"
         )
 
+    if os.environ.get("AWS_ENDPOINT_URL_DEADLINE"):
+        LOG.info(f"Using AWS_ENDPOINT_URL_DEADLINE: {os.environ.get('AWS_ENDPOINT_URL_DEADLINE')}")
+        cmds.insert(
+            0,
+            f"runuser -l {config.user} -s /bin/bash -c 'echo export AWS_ENDPOINT_URL_DEADLINE={os.environ.get('AWS_ENDPOINT_URL_DEADLINE')} >> ~/.bashrc'",
+        )
+
     return " && ".join(cmds)
 
 
