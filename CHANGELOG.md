@@ -1,3 +1,10 @@
+## 0.7.0 (2024-06-06)
+
+### BREAKING CHANGES
+* set AWS_ENDPOINT_URL_DEADLINE after installing service model (#96) ([`6bc4d8f`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/6bc4d8f024aed18c68fa207c4e01ecfbc7a6edd6))
+
+
+
 ## 0.6.2 (2024-04-02)
 
 
