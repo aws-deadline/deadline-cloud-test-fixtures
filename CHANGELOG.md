@@ -1,3 +1,10 @@
+## 0.7.1 (2024-06-07)
+
+
+
+### Bug Fixes
+* restore support for deprecated WORKER_REGION env var (#113) ([`58cc193`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/58cc19315285fec9ad9651ec7b65066d83e7b1dd))
+
 ## 0.7.0 (2024-06-06)
 
 ### BREAKING CHANGES
