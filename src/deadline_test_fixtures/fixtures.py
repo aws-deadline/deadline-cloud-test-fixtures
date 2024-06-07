@@ -145,7 +145,9 @@ def codeartifact() -> CodeArtifactRepositoryInfo:
 
 @pytest.fixture(scope="session")
 def region() -> str:
-    return os.getenv("REGION", os.getenv("AWS_DEFAULT_REGION", "us-west-2"))
+    return os.getenv(
+        "REGION", os.getenv("WORKER_REGION", os.getenv("AWS_DEFAULT_REGION", "us-west-2"))
+    )
 
 
 @pytest.fixture(scope="session")
@@ -402,8 +404,8 @@ def worker_config(
 
     # Deprecated environment variable
     if os.getenv("WORKER_REGION") is not None:
-        raise Exception(
-            "The environment variable WORKER_REGION is no longer supported. Please use REGION instead."
+        LOG.warning(
+            "DEPRECATED: The environment variable WORKER_REGION is no longer supported. Please use REGION instead."
         )
 
     # Prepare the Worker agent Python package
