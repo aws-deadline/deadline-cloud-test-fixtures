@@ -38,6 +38,7 @@ from .models import (
     PosixSessionUser,
     ServiceModel,
     S3Object,
+    OperatingSystem,
 )
 from .cloudformation import WorkerBootstrapStack
 from .job_attachment_manager import JobAttachmentManager
@@ -382,6 +383,7 @@ def worker_config(
     codeartifact: CodeArtifactRepositoryInfo,
     service_model: ServiceModel,
     region: str,
+    operating_system: OperatingSystem,
 ) -> Generator[DeadlineWorkerConfiguration, None, None]:
     """
     Builds the configuration for a DeadlineWorker.
@@ -418,7 +420,12 @@ def worker_config(
         ), f"Expected exactly one Worker agent whl path, but got {resolved_whl_paths} (from pattern {worker_agent_whl_path})"
         resolved_whl_path = resolved_whl_paths[0]
 
-        dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
+        if operating_system == "AL2023":
+            dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
+        else:
+            dest_path = posixpath.join(
+                "%USERPROFILE%\\AppData\\Local\\Temp", os.path.basename(resolved_whl_path)
+            )
         file_mappings = [(resolved_whl_path, dest_path)]
 
         LOG.info(f"The whl file will be copied to {dest_path} on the Worker environment")
@@ -438,7 +445,10 @@ def worker_config(
         with src_path.open(mode="w") as f:
             json.dump(service_model.model, f)
 
-        dst_path = posixpath.join("/tmp", src_path.name)
+        if operating_system == "AL2023":
+            dst_path = posixpath.join("/tmp", src_path.name)
+        else:
+            dst_path = posixpath.join("%USERPROFILE%\\AppData\\Local\\Temp", src_path.name)
         LOG.info(f"The service model will be copied to {dst_path} on the Worker environment")
         file_mappings.append((str(src_path), dst_path))
 
@@ -455,6 +465,7 @@ def worker_config(
             ),
             service_model_path=dst_path,
             file_mappings=file_mappings or None,
+            operating_system=operating_system,
         )
 
 
@@ -581,3 +592,11 @@ def _find_latest_service_model_file(service_name: str) -> str:
             f"Expected exactly one file to match glob '{service_model_path}.*, but got: {service_model_files}"
         )
     return service_model_files[0]
+
+
+@pytest.fixture(scope="session")
+def operating_system(request) -> OperatingSystem:
+    if request.param == "linux":
+        return OperatingSystem(name="AL2023")
+    else:
+        return OperatingSystem(name="WIN2022")

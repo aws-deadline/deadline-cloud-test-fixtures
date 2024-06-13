@@ -21,6 +21,7 @@ from typing import Any, ClassVar, Optional, cast
 from ..models import (
     PipInstall,
     PosixSessionUser,
+    OperatingSystem,
 )
 from ..util import call_api, wait_for
 
@@ -31,10 +32,11 @@ WORKER_JSON_PATH = "/var/lib/deadline/worker.json"
 DOCKER_CONTEXT_DIR = os.path.join(os.path.dirname(__file__), "..", "containers", "worker")
 
 
-def configure_worker_command(*, config: DeadlineWorkerConfiguration) -> str:  # pragma: no cover
+def linux_worker_command(config: DeadlineWorkerConfiguration) -> str:  # pragma: no cover
     """Get the command to configure the Worker. This must be run as root."""
+
     cmds = [
-        config.worker_agent_install.install_command,
+        config.worker_agent_install.install_command_for_linux,
         *(config.pre_install_commands or []),
         # fmt: off
         (
@@ -65,6 +67,54 @@ def configure_worker_command(*, config: DeadlineWorkerConfiguration) -> str:  # 
         )
 
     return " && ".join(cmds)
+
+
+def windows_worker_command(config: DeadlineWorkerConfiguration) -> str:  # pragma: no cover
+    """Get the command to configure the Worker. This must be run as root."""
+
+    cmds = [
+        config.worker_agent_install.install_command_for_windows,
+        *(config.pre_install_commands or []),
+        # fmt: off
+        (
+            "install-deadline-worker "
+            + "-y "
+            + f"--farm-id {config.farm_id} "
+            + f"--fleet-id {config.fleet_id} "
+            + f"--region {config.region} "
+            + f"--user {config.user} "
+            + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
+            + "--start"
+        ),
+        # fmt: on
+    ]
+
+    if config.service_model_path:
+        cmds.append(
+            f"aws configure add-model --service-model file://{config.service_model_path} --service-name deadline; "
+            f"Copy-Item -Path ~\\.aws\\* -Destination C:\\Users\\Administrator\\.aws\\models -Recurse; "
+            f"Copy-Item -Path ~\\.aws\\* -Destination C:\\Users\\{config.user}\\.aws\\models -Recurse; "
+            f"Copy-Item -Path ~\\.aws\\* -Destination C:\\Users\\jobuser\\.aws\\models -Recurse"
+        )
+
+    if os.environ.get("AWS_ENDPOINT_URL_DEADLINE"):
+        LOG.info(f"Using AWS_ENDPOINT_URL_DEADLINE: {os.environ.get('AWS_ENDPOINT_URL_DEADLINE')}")
+        cmds.insert(
+            0,
+            f"[System.Environment]::SetEnvironmentVariable('AWS_ENDPOINT_URL_DEADLINE', '{os.environ.get('AWS_ENDPOINT_URL_DEADLINE')}', [System.EnvironmentVariableTarget]::Machine); "
+            "$env:AWS_ENDPOINT_URL_DEADLINE = [System.Environment]::GetEnvironmentVariable('AWS_ENDPOINT_URL_DEADLINE','Machine')",
+        )
+
+    return "; ".join(cmds)
+
+
+def configure_worker_command(*, config: DeadlineWorkerConfiguration) -> str:  # pragma: no cover
+    """Get the command to configure the Worker. This must be run as root."""
+
+    if config.operating_system.name == "AL2023":
+        return linux_worker_command(config)
+    else:
+        return windows_worker_command(config)
 
 
 class DeadlineWorker(abc.ABC):
@@ -121,6 +171,7 @@ class CommandResult:  # pragma: no cover
 
 @dataclass(frozen=True)
 class DeadlineWorkerConfiguration:
+    operating_system: OperatingSystem
     farm_id: str
     fleet_id: str
     region: str
@@ -143,6 +194,7 @@ class DeadlineWorkerConfiguration:
 @dataclass
 class EC2InstanceWorker(DeadlineWorker):
     AL2023_AMI_NAME: ClassVar[str] = "al2023-ami-kernel-6.1-x86_64"
+    WIN2022_AMI_NAME: ClassVar[str] = "Windows_Server-2022-English-Full-Base"
 
     subnet_id: str
     security_group_id: str
@@ -188,17 +240,23 @@ class EC2InstanceWorker(DeadlineWorker):
         #
         # If we send an SSM command then we will get an InvalidInstanceId error
         # if the instance isn't in that state.
-        NUM_RETRIES = 10
-        SLEEP_INTERVAL_S = 5
+        NUM_RETRIES = 20
+        SLEEP_INTERVAL_S = 10
         for i in range(0, NUM_RETRIES):
             LOG.info(f"Sending SSM command to instance {self.instance_id}")
             try:
-                send_command_response = self.ssm_client.send_command(
-                    InstanceIds=[self.instance_id],
-                    DocumentName="AWS-RunShellScript",
-                    Parameters={"commands": [command]},
-                )
-                # Successfully sent. Bail out of the loop.
+                if self.configuration.operating_system.name == "AL2023":
+                    send_command_response = self.ssm_client.send_command(
+                        InstanceIds=[self.instance_id],
+                        DocumentName="AWS-RunShellScript",
+                        Parameters={"commands": [command]},
+                    )
+                else:
+                    send_command_response = self.ssm_client.send_command(
+                        InstanceIds=[self.instance_id],
+                        DocumentName="AWS-RunPowerShellScript",
+                        Parameters={"commands": [command]},
+                    )
                 break
             except botocore.exceptions.ClientError as error:
                 error_code = error.response["Error"]["Code"]
@@ -274,12 +332,10 @@ class EC2InstanceWorker(DeadlineWorker):
 
         return list(s3_to_dst_mapping.items())
 
-    def _launch_instance(self, *, s3_files: list[tuple[str, str]] | None = None) -> None:
-        assert (
-            not self.instance_id
-        ), "Attempted to launch EC2 instance when one was already launched"
-
+    def linux_userdata(self, s3_files) -> str:
         copy_s3_command = ""
+        job_users_cmds = []
+
         if s3_files:
             copy_s3_command = " && ".join(
                 [
@@ -287,8 +343,6 @@ class EC2InstanceWorker(DeadlineWorker):
                     for s3_uri, dst in s3_files
                 ]
             )
-
-        job_users_cmds = []
         for job_user in self.configuration.job_users:
             job_users_cmds.append(f"groupadd {job_user.group}")
             job_users_cmds.append(
@@ -307,6 +361,50 @@ class EC2InstanceWorker(DeadlineWorker):
         )
 
         configure_job_users = "\n".join(job_users_cmds)
+
+        userdata = f"""#!/bin/bash
+        # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+        set -x
+        groupadd --system {self.configuration.group}
+        useradd --create-home --system --shell=/bin/bash --groups={self.configuration.group} {self.configuration.user}
+        {configure_job_users}
+        {copy_s3_command}
+
+        runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv && echo ". $HOME/.venv/bin/activate" >> $HOME/.bashrc'
+        """
+
+        return userdata
+
+    def windows_userdata(self, s3_files) -> str:
+        copy_s3_command = ""
+        if s3_files:
+            copy_s3_command = " ; ".join([f"aws s3 cp {s3_uri} {dst}" for s3_uri, dst in s3_files])
+
+        userdata = f"""<powershell>
+            Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -OutFile "C:\python-3.11.9-amd64.exe"
+            Start-Process -FilePath "C:\python-3.11.9-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
+            Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\AWSCLIV2.msi"
+            Start-Process msiexec.exe -ArgumentList "/i C:\AWSCLIV2.msi /quiet" -Wait
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+            $secret = aws secretsmanager get-secret-value --secret-id WindowsPasswordSecret --query SecretString --output text | ConvertFrom-Json
+            $password = ConvertTo-SecureString -String $($secret.password) -AsPlainText -Force
+            New-LocalUser -Name "jobuser" -Password $password -FullName "jobuser" -Description "job user"
+            $Cred = New-Object System.Management.Automation.PSCredential "jobuser", $password
+            Start-Process cmd.exe -Credential $Cred -ArgumentList "/C" -LoadUserProfile -NoNewWindow
+            {copy_s3_command}
+            </powershell>"""
+
+        return userdata
+
+    def _launch_instance(self, *, s3_files: list[tuple[str, str]] | None = None) -> None:
+        assert (
+            not self.instance_id
+        ), "Attempted to launch EC2 instance when one was already launched"
+
+        if self.configuration.operating_system.name == "AL2023":
+            userdata = self.linux_userdata(s3_files)
+        else:
+            userdata = self.windows_userdata(s3_files)
 
         LOG.info("Launching EC2 instance")
         run_instance_response = self.ec2_client.run_instances(
@@ -329,16 +427,7 @@ class EC2InstanceWorker(DeadlineWorker):
                     ],
                 }
             ],
-            UserData=f"""#!/bin/bash
-# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-set -x
-groupadd --system {self.configuration.group}
-useradd --create-home --system --shell=/bin/bash --groups={self.configuration.group} {self.configuration.user}
-{configure_job_users}
-{copy_s3_command}
-
-runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv && echo ". $HOME/.venv/bin/activate" >> $HOME/.bashrc'
-""",
+            UserData=userdata,
         )
 
         self.instance_id = run_instance_response["Instances"][0]["InstanceId"]
@@ -352,10 +441,7 @@ runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv
         )
         LOG.info(f"EC2 instance {self.instance_id} status is OK")
 
-    def _start_worker_agent(self) -> None:  # pragma: no cover
-        assert self.instance_id
-
-        LOG.info(f"Sending SSM command to configure Worker agent on instance {self.instance_id}")
+    def start_linux_worker(self) -> None:
         cmd_result = self.send_command(
             f"cd /home/{self.configuration.user}; . .venv/bin/activate; AWS_DEFAULT_REGION={self.configuration.region} {configure_worker_command(config=self.configuration)}"
         )
@@ -378,6 +464,33 @@ runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv
         assert cmd_result.exit_code == 0, f"Failed to start Worker agent: {cmd_result}"
         LOG.info("Successfully started Worker agent")
 
+    def start_windows_worker(self) -> None:
+        cmd_result = self.send_command(f"{configure_worker_command(config=self.configuration)}")
+        LOG.info("Successfully configured Worker agent")
+        LOG.info("Sending SSM Command to check if Worker Agent is running")
+        cmd_result = self.send_command(
+            " ; ".join(
+                [
+                    "echo Waiting 20s for the agent service to get started",
+                    "sleep 20",
+                    "echo 'Running running Get-Process to check if the agent is running'",
+                    "IF(Get-Process pythonservice){echo 'service is running'}ELSE{exit 1}",
+                ]
+            ),
+        )
+        assert cmd_result.exit_code == 0, f"Failed to start Worker agent: {cmd_result}"
+        LOG.info("Successfully started Worker agent")
+
+    def _start_worker_agent(self) -> None:  # pragma: no cover
+        assert self.instance_id
+
+        LOG.info(f"Sending SSM command to configure Worker agent on instance {self.instance_id}")
+
+        if self.configuration.operating_system.name == "AL2023":
+            self.start_linux_worker()
+        else:
+            self.start_windows_worker()
+
     @property
     def worker_id(self) -> str:
         cmd_result = self.send_command("cat /var/lib/deadline/worker.json  | jq -r '.worker_id'")
@@ -392,13 +505,21 @@ runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv
     @property
     def ami_id(self) -> str:
         if not hasattr(self, "_ami_id"):
-            # Grab the latest AL2023 AMI
-            # https://aws.amazon.com/blogs/compute/query-for-the-latest-amazon-linux-ami-ids-using-aws-systems-manager-parameter-store/
-            ssm_param_name = (
-                f"/aws/service/ami-amazon-linux-latest/{EC2InstanceWorker.AL2023_AMI_NAME}"
-            )
+            if self.configuration.operating_system.name == "AL2023":
+                # Grab the latest AL2023 AMI
+                # https://aws.amazon.com/blogs/compute/query-for-the-latest-amazon-linux-ami-ids-using-aws-systems-manager-parameter-store/
+                ssm_param_name = (
+                    f"/aws/service/ami-amazon-linux-latest/{EC2InstanceWorker.AL2023_AMI_NAME}"
+                )
+            else:
+                # Grab the latest Windows Server 2022 AMI
+                # https://aws.amazon.com/blogs/mt/query-for-the-latest-windows-ami-using-systems-manager-parameter-store/
+                ssm_param_name = (
+                    f"/aws/service/ami-windows-latest/{EC2InstanceWorker.WIN2022_AMI_NAME}"
+                )
+
             response = call_api(
-                description=f"Getting latest AL2023 AMI ID from SSM parameter {ssm_param_name}",
+                description=f"Getting latest {self.configuration.operating_system.name} AMI ID from SSM parameter {ssm_param_name}",
                 fn=lambda: self.ssm_client.get_parameters(Names=[ssm_param_name]),
             )
 
@@ -407,7 +528,7 @@ runuser --login {self.configuration.user} --command 'python3 -m venv $HOME/.venv
                 len(parameters) == 1
             ), f"Received incorrect number of SSM parameters. Expected 1, got response: {response}"
             self._ami_id = parameters[0]["Value"]
-            LOG.info(f"Using latest AL2023 AMI {self._ami_id}")
+            LOG.info(f"Using latest {self.configuration.operating_system.name} AMI {self._ami_id}")
 
         return self._ami_id
 
@@ -425,7 +546,6 @@ class DockerContainerWorker(DeadlineWorker):
     def start(self) -> None:
         self._tmpdir = pathlib.Path(tempfile.mkdtemp())
 
-        # TODO: Support multiple job users on Docker
         assert (
             len(self.configuration.job_users) == 1
         ), f"Multiple job users not supported on Docker worker: {self.configuration.job_users}"

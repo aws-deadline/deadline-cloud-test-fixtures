@@ -20,6 +20,7 @@ from deadline_test_fixtures import (
     DockerContainerWorker,
     EC2InstanceWorker,
     PipInstall,
+    OperatingSystem,
     S3Object,
 )
 
@@ -81,6 +82,7 @@ def worker_config(region: str) -> DeadlineWorkerConfiguration:
             ("/aws/models/deadline.json", "/tmp/deadline.json"),
         ],
         service_model_path="/path/to/service-2.json",
+        operating_system=OperatingSystem(name="AL2023"),
     )
 
 
