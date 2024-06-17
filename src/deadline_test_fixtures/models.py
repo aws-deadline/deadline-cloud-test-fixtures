@@ -38,6 +38,11 @@ class JobRunAsUser:
 
 
 @dataclass(frozen=True)
+class OperatingSystem:
+    name: Literal["AL2023", "WIN2022"]
+
+
+@dataclass(frozen=True)
 class CodeArtifactRepositoryInfo:
     region: str
     domain: str
@@ -176,7 +181,7 @@ class PipInstall:  # pragma: no cover
         return args
 
     @property
-    def install_command(self) -> str:
+    def install_command_for_linux(self) -> str:
         cmds = []
 
         if self.codeartifact:
@@ -201,4 +206,32 @@ class PipInstall:  # pragma: no cover
             )
         )
 
-        return " && ".join(cmds)
+        return "&& ".join(cmds)
+
+    @property
+    def install_command_for_windows(self) -> str:
+        cmds = []
+
+        if self.codeartifact:
+            cmds.append(
+                "aws codeartifact login --tool pip "
+                + f"--domain {self.codeartifact.domain} "
+                + f"--domain-owner {self.codeartifact.domain_owner} "
+                + f"--repository {self.codeartifact.repository} "
+            )
+
+        if self.upgrade_pip:
+            cmds.append("pip install --upgrade pip")
+
+        cmds.append(
+            " ".join(
+                [
+                    "pip",
+                    "install",
+                    *self.install_args,
+                    *self.requirement_specifiers,
+                ]
+            )
+        )
+
+        return "; ".join(cmds)

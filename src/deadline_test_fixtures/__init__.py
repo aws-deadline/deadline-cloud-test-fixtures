@@ -36,6 +36,7 @@ from .models import (
     PosixSessionUser,
     S3Object,
     ServiceModel,
+    OperatingSystem,
 )
 from ._version import __version__ as version  # noqa
 
@@ -60,6 +61,7 @@ __all__ = [
     "PosixSessionUser",
     "S3Object",
     "ServiceModel",
+    "OperatingSystem",
     "Queue",
     "QueueFleetAssociation",
     "TaskStatus",
