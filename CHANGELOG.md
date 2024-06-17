@@ -1,3 +1,10 @@
+## 0.8.0 (2024-06-17)
+
+### BREAKING CHANGES
+* add windows support to worker fixture (#115) ([`ef7f133`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/ef7f1336d6c489982ed18cd11279faa0699c460c))
+
+
+
 ## 0.7.1 (2024-06-07)
 
 
