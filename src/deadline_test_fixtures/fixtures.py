@@ -420,7 +420,7 @@ def worker_config(
         ), f"Expected exactly one Worker agent whl path, but got {resolved_whl_paths} (from pattern {worker_agent_whl_path})"
         resolved_whl_path = resolved_whl_paths[0]
 
-        if operating_system == "AL2023":
+        if operating_system.name == "AL2023":
             dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
         else:
             dest_path = posixpath.join(
@@ -445,7 +445,7 @@ def worker_config(
         with src_path.open(mode="w") as f:
             json.dump(service_model.model, f)
 
-        if operating_system == "AL2023":
+        if operating_system.name == "AL2023":
             dst_path = posixpath.join("/tmp", src_path.name)
         else:
             dst_path = posixpath.join("%USERPROFILE%\\AppData\\Local\\Temp", src_path.name)
