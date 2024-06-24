@@ -1,3 +1,10 @@
+## 0.8.1 (2024-06-24)
+
+
+
+### Bug Fixes
+* check value of operating_system.name instead of operating_system (#117) ([`094069d`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/094069d92863fbc7c1c2f0cf61647ae9fc8622df))
+
 ## 0.8.0 (2024-06-17)
 
 ### BREAKING CHANGES
