@@ -2,18 +2,18 @@
 from __future__ import annotations
 
 from dataclasses import InitVar, dataclass, field
-
+import os
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError, WaiterError
 
-from .cloudformation import JobAttachmentsBootstrapStack
 from .deadline.client import DeadlineClient
 from .deadline import (
     Farm,
     Queue,
 )
 
-from .models import JobRunAsUser, PosixSessionUser
+from .models import JobAttachmentSettings, JobRunAsUser, PosixSessionUser
+from uuid import uuid4
 
 
 @dataclass
@@ -23,66 +23,60 @@ class JobAttachmentManager:
     """
 
     s3_client: BaseClient
-    cfn_client: BaseClient
     deadline_client: DeadlineClient
 
     stage: InitVar[str]
     account_id: InitVar[str]
 
-    stack: JobAttachmentsBootstrapStack = field(init=False)
-    farm: Farm | None = field(init=False, default=None)
+    bucket_name: str
+    farm_id: str
+
     queue: Queue | None = field(init=False, default=None)
     queue_with_no_settings: Queue | None = field(init=False, default=None)
-
-    def __post_init__(
-        self,
-        stage: str,
-        account_id: str,
-    ):
-        self.bucket_name = f"job-attachment-integ-test-{stage.lower()}-{account_id}"
-        self.stack = JobAttachmentsBootstrapStack(
-            name="JobAttachmentIntegTest",
-            bucket_name=self.bucket_name,
-        )
+    bucket_root_prefix: str = os.environ.get("JA_TEST_ROOT_PREFIX", "") + str(
+        uuid4()
+    )  # Set the bucket root prefix for this test run to an UUID to avoid async test execution race conditions
 
     def deploy_resources(self):
         """
         Deploy all of the resources needed for job attachment integration tests.
         """
         try:
-            self.farm = Farm.create(
-                client=self.deadline_client,
-                display_name="job_attachments_test_farm",
-            )
+
             self.queue = Queue.create(
                 client=self.deadline_client,
                 display_name="job_attachments_test_queue",
-                farm=self.farm,
+                farm=Farm(self.farm_id),
                 job_run_as_user=JobRunAsUser(
                     posix=PosixSessionUser("", ""), runAs="WORKER_AGENT_USER"
+                ),
+                job_attachments=JobAttachmentSettings(
+                    bucket_name=self.bucket_name, root_prefix=self.bucket_root_prefix
                 ),
             )
             self.queue_with_no_settings = Queue.create(
                 client=self.deadline_client,
                 display_name="job_attachments_test_no_settings_queue",
-                farm=self.farm,
+                farm=Farm(self.farm_id),
                 job_run_as_user=JobRunAsUser(
                     posix=PosixSessionUser("", ""), runAs="WORKER_AGENT_USER"
                 ),
             )
-            self.stack.deploy(cfn_client=self.cfn_client)
+
         except (ClientError, WaiterError):
             # If anything goes wrong, rollback
             self.cleanup_resources()
             raise
 
-    def empty_bucket(self):
+    def empty_bucket_under_root_prefix(self):
         """
         Empty the bucket between session runs
         """
         try:
             # List up all objects and their versions in the bucket
-            version_list = self.s3_client.list_object_versions(Bucket=self.bucket_name)
+            version_list = self.s3_client.list_object_versions(
+                Bucket=self.bucket_name, Prefix=self.bucket_root_prefix
+            )
             object_list = version_list.get("Versions", []) + version_list.get("DeleteMarkers", [])
             # Delete all objects and versions
             for obj in object_list:
@@ -96,13 +90,10 @@ class JobAttachmentManager:
 
     def cleanup_resources(self):
         """
-        Cleanup all of the resources that the test used, except for the stack.
+        Cleanup all of the resources that the test used
         """
-        self.empty_bucket()
-        self.stack.destroy(cfn_client=self.cfn_client)
+        self.empty_bucket_under_root_prefix()
         if self.queue:
             self.queue.delete(client=self.deadline_client)
         if self.queue_with_no_settings:
             self.queue_with_no_settings.delete(client=self.deadline_client)
-        if self.farm:
-            self.farm.delete(client=self.deadline_client)

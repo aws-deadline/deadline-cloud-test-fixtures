@@ -570,10 +570,11 @@ def deploy_job_attachment_resources() -> Generator[JobAttachmentManager, None, N
     """
     manager = JobAttachmentManager(
         s3_client=boto3.client("s3"),
-        cfn_client=boto3.client("cloudformation"),
         deadline_client=DeadlineClient(boto3.client("deadline")),
         account_id=os.environ["SERVICE_ACCOUNT_ID"],
         stage=os.getenv("STAGE", "dev"),
+        bucket_name=os.environ["JOB_ATTACHMENTS_BUCKET"],
+        farm_id=os.environ["FARM_ID"],
     )
     manager.deploy_resources()
     yield manager
