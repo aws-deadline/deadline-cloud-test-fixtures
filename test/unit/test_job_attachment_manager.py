@@ -18,19 +18,9 @@ class TestJobAttachmentManager:
     """
 
     @pytest.fixture(autouse=True)
-    def mock_farm_cls(self) -> Generator[MagicMock, None, None]:
-        with patch.object(jam_module, "Farm") as mock:
-            yield mock
-
-    @pytest.fixture(autouse=True)
     def mock_queue_cls(self) -> Generator[MagicMock, None, None]:
         with patch.object(jam_module, "Queue") as mock:
             yield mock
-
-    @pytest.fixture(autouse=True)
-    def mock_stack(self) -> Generator[MagicMock, None, None]:
-        with patch.object(jam_module, "JobAttachmentsBootstrapStack") as mock:
-            yield mock.return_value
 
     @pytest.fixture
     def job_attachment_manager(
@@ -39,19 +29,18 @@ class TestJobAttachmentManager:
         with mock_s3():
             yield JobAttachmentManager(
                 s3_client=boto3.client("s3"),
-                cfn_client=MagicMock(),
                 deadline_client=DeadlineClient(MagicMock()),
                 stage="test",
                 account_id="123456789101",
+                farm_id="farm-123450981092384",
+                bucket_name="job-attachment-bucket-name",
             )
 
     class TestDeployResources:
         def test_deploys_all_resources(
             self,
             job_attachment_manager: JobAttachmentManager,
-            mock_farm_cls: MagicMock,
             mock_queue_cls: MagicMock,
-            mock_stack: MagicMock,
         ):
             """
             Tests that all resources are created when deploy_resources is called
@@ -60,9 +49,7 @@ class TestJobAttachmentManager:
             job_attachment_manager.deploy_resources()
 
             # THEN
-            mock_farm_cls.create.assert_called_once()
             mock_queue_cls.create.call_count == 2
-            mock_stack.deploy.assert_called_once()
 
         @pytest.mark.parametrize(
             "error",
@@ -75,18 +62,14 @@ class TestJobAttachmentManager:
             self,
             error: Exception,
             job_attachment_manager: JobAttachmentManager,
-            mock_farm_cls: MagicMock,
             mock_queue_cls: MagicMock,
-            mock_stack: MagicMock,
         ):
             """
             Test that if there's an issue deploying resources, the rest get cleaned up.
             """
             # GIVEN
             possible_failures: list[MagicMock] = [
-                mock_farm_cls.create,
                 mock_queue_cls.create,
-                mock_stack.deploy,
             ]
             for possible_failure in possible_failures:
                 possible_failure.side_effect = error
@@ -107,19 +90,30 @@ class TestJobAttachmentManager:
                 spy_cleanup_resources.assert_called_once()
 
     class TestEmptyBucket:
-        def test_deletes_all_objects(self, job_attachment_manager: JobAttachmentManager):
+        def test_deletes_all_objects_under_prefix(
+            self, job_attachment_manager: JobAttachmentManager
+        ):
             # GIVEN
             bucket = boto3.resource("s3").Bucket(job_attachment_manager.bucket_name)
             bucket.create()
-            bucket.put_object(Key="test-object", Body="Hello world".encode())
-            bucket.put_object(Key="test-object-2", Body="Hello world 2".encode())
-            assert len(list(bucket.objects.all())) == 2
+            bucket.put_object(
+                Key=job_attachment_manager.bucket_root_prefix + "/" + "test-object",
+                Body="Hello world".encode(),
+            )
+            bucket.put_object(
+                Key=job_attachment_manager.bucket_root_prefix + "/" + "test-object-2",
+                Body="Hello world 2".encode(),
+            )
+            bucket.put_object(
+                Key="differen-prefix" + "/" + "test-object-2", Body="Hello world 2".encode()
+            )
+            assert len(list(bucket.objects.all())) == 3
 
             # WHEN
-            job_attachment_manager.empty_bucket()
+            job_attachment_manager.empty_bucket_under_root_prefix()
 
             # THEN
-            assert len(list(bucket.objects.all())) == 0
+            assert len(list(bucket.objects.all())) == 1
 
         def test_swallows_bucket_doesnt_exist_error(
             self, job_attachment_manager: JobAttachmentManager
@@ -132,7 +126,7 @@ class TestJobAttachmentManager:
 
             try:
                 # WHEN
-                job_attachment_manager.empty_bucket()
+                job_attachment_manager.empty_bucket_under_root_prefix()
             except ClientError as e:
                 pytest.fail(
                     f"JobAttachmentManager.empty_bucket raised an error when it shouldn't have: {e}"
@@ -158,7 +152,7 @@ class TestJobAttachmentManager:
                 mock_s3_client.list_object_versions.side_effect = exc
 
                 # WHEN
-                job_attachment_manager.empty_bucket()
+                job_attachment_manager.empty_bucket_under_root_prefix()
 
             # THEN
             assert raised_exc.value is exc
@@ -167,9 +161,7 @@ class TestJobAttachmentManager:
     def test_cleanup_resources(
         self,
         job_attachment_manager: JobAttachmentManager,
-        mock_farm_cls: MagicMock,
         mock_queue_cls: MagicMock,
-        mock_stack: MagicMock,
     ):
         """
         Test that all resources get cleaned up when they exist.
@@ -178,13 +170,13 @@ class TestJobAttachmentManager:
         job_attachment_manager.deploy_resources()
 
         with patch.object(
-            job_attachment_manager, "empty_bucket", wraps=job_attachment_manager.empty_bucket
+            job_attachment_manager,
+            "empty_bucket_under_root_prefix",
+            wraps=job_attachment_manager.empty_bucket_under_root_prefix,
         ) as spy_empty_bucket:
             # WHEN
             job_attachment_manager.cleanup_resources()
 
         # THEN
         spy_empty_bucket.assert_called_once()
-        mock_stack.destroy.assert_called_once()
         mock_queue_cls.create.return_value.delete.call_count == 2
-        mock_farm_cls.create.return_value.delete.assert_called_once()
