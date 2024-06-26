@@ -1,3 +1,10 @@
+## 0.9.0 (2024-06-26)
+
+### BREAKING CHANGES
+* Refactor JA integ test resource creation so that we use some resources from the environment (#119) ([`50b36f1`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/50b36f10d38b60f5c5d9aecd88ab846a3fe4cba8))
+
+
+
 ## 0.8.1 (2024-06-24)
 
 
