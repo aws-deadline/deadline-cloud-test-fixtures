@@ -23,6 +23,7 @@ from ..models import (
     PosixSessionUser,
     OperatingSystem,
 )
+from .resources import Fleet
 from ..util import call_api, wait_for
 
 LOG = logging.getLogger(__name__)
@@ -43,7 +44,7 @@ def linux_worker_command(config: DeadlineWorkerConfiguration) -> str:  # pragma:
             "install-deadline-worker "
             + "-y "
             + f"--farm-id {config.farm_id} "
-            + f"--fleet-id {config.fleet_id} "
+            + f"--fleet-id {config.fleet.id} "
             + f"--region {config.region} "
             + f"--user {config.user} "
             + f"--group {config.group} "
@@ -80,7 +81,7 @@ def windows_worker_command(config: DeadlineWorkerConfiguration) -> str:  # pragm
             "install-deadline-worker "
             + "-y "
             + f"--farm-id {config.farm_id} "
-            + f"--fleet-id {config.fleet_id} "
+            + f"--fleet-id {config.fleet.id} "
             + f"--region {config.region} "
             + f"--user {config.user} "
             + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
@@ -173,7 +174,7 @@ class CommandResult:  # pragma: no cover
 class DeadlineWorkerConfiguration:
     operating_system: OperatingSystem
     farm_id: str
-    fleet_id: str
+    fleet: Fleet
     region: str
     user: str
     group: str
@@ -203,6 +204,7 @@ class EC2InstanceWorker(DeadlineWorker):
     s3_client: botocore.client.BaseClient
     ec2_client: botocore.client.BaseClient
     ssm_client: botocore.client.BaseClient
+    deadline_client: botocore.client.BaseClient
     configuration: DeadlineWorkerConfiguration
 
     instance_id: Optional[str] = field(init=False, default=None)
@@ -223,9 +225,59 @@ class EC2InstanceWorker(DeadlineWorker):
         self._start_worker_agent()
 
     def stop(self) -> None:
+        worker_id = self.worker_id
         LOG.info(f"Terminating EC2 instance {self.instance_id}")
         self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
+
+        """
+        When using autoscaling workers are deleted from fleets, 
+        for non autoscaling fleets we need to manually delete the worker.
+        """
+        if not self.configuration.fleet.autoscaling:
+            self.delete_worker_from_fleet(worker_id)
+
         self.instance_id = None
+
+    def delete_worker_from_fleet(self, worker_id: str):
+        for _ in range(30):
+            response = self.deadline_client.get_worker(
+                farmId=self.configuration.farm_id,
+                fleetId=self.configuration.fleet.id,
+                workerId=worker_id,
+            )
+            if response["status"] == "STOPPED":
+                LOG.info(f"{worker_id} is STOPPED")
+                break
+            time.sleep(5)
+            LOG.info(f"Waiting for {worker_id} to transition to STOPPED status")
+        else:
+            LOG.exception(f"{worker_id} did not transition to a STOPPED status")
+            try:
+                self.force_stopped_status(worker_id)
+            except botocore.exceptions.ClientError as error:
+                LOG.exception(f"Failed to transition {worker_id} to stopped status: {error}")
+
+        try:
+            self.deadline_client.delete_worker(
+                farmId=self.configuration.farm_id,
+                fleetId=self.configuration.fleet.id,
+                workerId=worker_id,
+            )
+            LOG.info(f"{worker_id} has been deleted from {self.configuration.fleet.id}")
+        except botocore.exceptions.ClientError as error:
+            LOG.exception(f"Failed to delete worker: {error}")
+
+    def force_stopped_status(self, worker_id: str):
+        LOG.info(f"Force stopping {worker_id}")
+        try:
+            self.deadline_client.update_worker(
+                farmId=self.configuration.farm_id,
+                fleetId=self.configuration.fleet.id,
+                workerId=worker_id,
+                status="STOPPED",
+            )
+        except botocore.exceptions.ClientError as error:
+            LOG.exception(f"Failed to update worker status: {error}")
 
     def send_command(self, command: str) -> CommandResult:
         """Send a command via SSM to a shell on a launched EC2 instance. Once the command has fully
@@ -493,7 +545,19 @@ class EC2InstanceWorker(DeadlineWorker):
 
     @property
     def worker_id(self) -> str:
-        cmd_result = self.send_command("cat /var/lib/deadline/worker.json  | jq -r '.worker_id'")
+        if self.configuration.operating_system.name == "AL2023":
+            cmd_result = self.send_command(
+                "cat /var/lib/deadline/worker.json  | jq -r '.worker_id'"
+            )
+        else:
+            cmd_result = self.send_command(
+                " ; ".join(
+                    [
+                        "$worker=Select-String -Path C:\ProgramData\Amazon\Deadline\Cache\worker.json -Pattern 'worker_id' | Select-Object -ExpandProperty  Line | ConvertFrom-Json",
+                        "echo $worker.worker_id",
+                    ]
+                )
+            )
         assert cmd_result.exit_code == 0, f"Failed to get Worker ID: {cmd_result}"
 
         worker_id = cmd_result.stdout.rstrip("\n\r")
@@ -553,7 +617,7 @@ class DockerContainerWorker(DeadlineWorker):
         run_container_env = {
             **os.environ,
             "FARM_ID": self.configuration.farm_id,
-            "FLEET_ID": self.configuration.fleet_id,
+            "FLEET_ID": self.configuration.fleet.id,
             "AGENT_USER": self.configuration.user,
             "SHARED_GROUP": self.configuration.group,
             "JOB_USER": self.configuration.job_users[0].user,

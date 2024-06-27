@@ -14,14 +14,16 @@ from moto import mock_ec2, mock_iam, mock_s3, mock_ssm
 
 from deadline_test_fixtures.deadline import worker as mod
 from deadline_test_fixtures import (
-    CodeArtifactRepositoryInfo,
     CommandResult,
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
     EC2InstanceWorker,
     PipInstall,
+    CodeArtifactRepositoryInfo,
     OperatingSystem,
     S3Object,
+    Fleet,
+    Farm,
 )
 
 
@@ -62,7 +64,7 @@ def region(boto_config: dict[str, str]) -> str:
 def worker_config(region: str) -> DeadlineWorkerConfiguration:
     return DeadlineWorkerConfiguration(
         farm_id="farm-123",
-        fleet_id="fleet-123",
+        fleet=Fleet(id="fleet_123", farm=Farm(id="farm-123")),
         region=region,
         user="test-user",
         group="test-group",
@@ -157,6 +159,7 @@ class TestEC2InstanceWorker:
             s3_client=boto3.client("s3"),
             ec2_client=boto3.client("ec2"),
             ssm_client=boto3.client("ssm"),
+            deadline_client=boto3.client("deadline"),
             configuration=worker_config,
         )
 
@@ -248,7 +251,14 @@ class TestEC2InstanceWorker:
         assert instance["State"]["Name"] == "running"
 
         # WHEN
-        worker.stop()
+        with patch.object(
+            worker,
+            "send_command",
+            return_value=CommandResult(
+                exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+            ),
+        ):
+            worker.stop()
 
         # THEN
         instance = TestEC2InstanceWorker.describe_instance(instance_id)
