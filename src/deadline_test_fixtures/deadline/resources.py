@@ -103,6 +103,7 @@ class Queue:
 class Fleet:
     id: str
     farm: Farm
+    autoscaling: bool = True
 
     @staticmethod
     def create(

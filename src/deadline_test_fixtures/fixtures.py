@@ -454,7 +454,7 @@ def worker_config(
 
         yield DeadlineWorkerConfiguration(
             farm_id=deadline_resources.farm.id,
-            fleet_id=deadline_resources.fleet.id,
+            fleet=deadline_resources.fleet,
             region=region,
             user=os.getenv("WORKER_POSIX_USER", "deadline-worker"),
             group=os.getenv("WORKER_POSIX_SHARED_GROUP", "shared-group"),
@@ -514,10 +514,12 @@ def worker(
         ec2_client = boto3.client("ec2")
         s3_client = boto3.client("s3")
         ssm_client = boto3.client("ssm")
+        deadline_client = boto3.client("deadline")
 
         worker = EC2InstanceWorker(
             ec2_client=ec2_client,
             s3_client=s3_client,
+            deadline_client=deadline_client,
             bootstrap_bucket_name=bootstrap_resources.bootstrap_bucket_name,
             ssm_client=ssm_client,
             override_ami_id=ami_id,
