@@ -16,6 +16,8 @@ from .worker import (
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
     EC2InstanceWorker,
+    PosixInstanceWorker,
+    WindowsInstanceWorker,
     PipInstall,
 )
 
@@ -27,6 +29,8 @@ __all__ = [
     "DeadlineWorkerConfiguration",
     "DockerContainerWorker",
     "EC2InstanceWorker",
+    "WindowsInstanceWorker",
+    "PosixInstanceWorker",
     "Farm",
     "Fleet",
     "Job",

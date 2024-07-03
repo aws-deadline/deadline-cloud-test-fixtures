@@ -32,8 +32,15 @@ class PosixSessionUser:
 
 
 @dataclass(frozen=True)
+class WindowsSessionUser:
+    user: str
+    passwordArn: str
+
+
+@dataclass(frozen=True)
 class JobRunAsUser:
     posix: PosixSessionUser
+    windows: WindowsSessionUser
     runAs: Literal["QUEUE_CONFIGURED_USER", "WORKER_AGENT_USER"]
 
 
