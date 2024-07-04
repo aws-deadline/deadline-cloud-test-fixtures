@@ -14,14 +14,16 @@ from moto import mock_ec2, mock_iam, mock_s3, mock_ssm
 
 from deadline_test_fixtures.deadline import worker as mod
 from deadline_test_fixtures import (
-    CodeArtifactRepositoryInfo,
     CommandResult,
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
     EC2InstanceWorker,
     PipInstall,
+    CodeArtifactRepositoryInfo,
     OperatingSystem,
     S3Object,
+    Fleet,
+    Farm,
 )
 
 
@@ -62,7 +64,7 @@ def region(boto_config: dict[str, str]) -> str:
 def worker_config(region: str) -> DeadlineWorkerConfiguration:
     return DeadlineWorkerConfiguration(
         farm_id="farm-123",
-        fleet_id="fleet-123",
+        fleet=Fleet(id="fleet_123", farm=Farm(id="farm-123")),
         region=region,
         user="test-user",
         group="test-group",
@@ -157,7 +159,9 @@ class TestEC2InstanceWorker:
             s3_client=boto3.client("s3"),
             ec2_client=boto3.client("ec2"),
             ssm_client=boto3.client("ssm"),
+            deadline_client=boto3.client("deadline"),
             configuration=worker_config,
+            worker_id="worker-7c3377ec9eba444bb51cc7da18463081",
         )
 
     @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
@@ -171,6 +175,13 @@ class TestEC2InstanceWorker:
             patch.object(worker, "_stage_s3_bucket", return_value=s3_files) as mock_stage_s3_bucket,
             patch.object(worker, "_launch_instance") as mock_launch_instance,
             patch.object(worker, "_start_worker_agent") as mock_start_worker_agent,
+            patch.object(
+                worker,
+                "get_worker_id",
+                return_value=CommandResult(
+                    exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+            ),
         ):
             # WHEN
             worker.start()
@@ -240,14 +251,17 @@ class TestEC2InstanceWorker:
 
     def test_stop(self, worker: EC2InstanceWorker) -> None:
         # GIVEN
-        worker.start()
+        # WHEN
+        with patch.object(
+            worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+        ):
+            worker.start()
         instance_id = worker.instance_id
         assert instance_id is not None
 
         instance = TestEC2InstanceWorker.describe_instance(instance_id)
         assert instance["State"]["Name"] == "running"
 
-        # WHEN
         worker.stop()
 
         # THEN
@@ -259,7 +273,11 @@ class TestEC2InstanceWorker:
         def test_sends_command(self, worker: EC2InstanceWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
-            worker.start()
+            # WHEN
+            with patch.object(
+                worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+            ):
+                worker.start()
 
             # WHEN
             with patch.object(
@@ -277,7 +295,11 @@ class TestEC2InstanceWorker:
         def test_retries_when_instance_not_ready(self, worker: EC2InstanceWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
-            worker.start()
+            # WHEN
+            with patch.object(
+                worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+            ):
+                worker.start()
             real_send_command = worker.ssm_client.send_command
 
             call_count = 0
@@ -311,7 +333,11 @@ class TestEC2InstanceWorker:
         def test_raises_any_other_error(self, worker: EC2InstanceWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
-            worker.start()
+            # WHEN
+            with patch.object(
+                worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+            ):
+                worker.start()
             err = ClientError({"Error": {"Code": "SomethingWentWrong"}}, "SendCommand")
 
             # WHEN
@@ -337,7 +363,7 @@ class TestEC2InstanceWorker:
             "worker-7c3377ec9eba444bb51cc7da18463081\r\n",
         ],
     )
-    def test_worker_id(self, worker_id: str, worker: EC2InstanceWorker) -> None:
+    def test_get_worker_id(self, worker_id: str, worker: EC2InstanceWorker) -> None:
         # GIVEN
         with patch.object(
             worker, "send_command", return_value=CommandResult(exit_code=0, stdout=worker_id)
