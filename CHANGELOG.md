@@ -1,3 +1,10 @@
+## 0.10.0 (2024-07-04)
+
+### BREAKING CHANGES
+* delete workers from non-autoscaling fleets (#124) ([`1217b4b`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/1217b4b91e06ad3dc7f26c273bf98a72d7bf00fe))
+
+
+
 ## 0.9.0 (2024-06-26)
 
 ### BREAKING CHANGES
