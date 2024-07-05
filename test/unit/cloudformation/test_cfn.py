@@ -6,7 +6,7 @@ import boto3
 import pytest
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError
-from moto import mock_cloudformation
+from moto import mock_aws
 
 from deadline_test_fixtures.cloudformation.cfn import (
     CfnResource,
@@ -35,7 +35,7 @@ class TestCfnStack:
 
     @pytest.fixture
     def cfn_client(self) -> Generator[BaseClient, None, None]:
-        with mock_cloudformation():
+        with mock_aws():
             yield boto3.client("cloudformation")
 
     class TestDeploy:
