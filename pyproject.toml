@@ -101,12 +101,14 @@ module = "moto"
 ignore_missing_imports = true
 
 [tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
 ignore = [
   "E501",
 ]
-line-length = 100
 
-[tool.ruff.isort]
+[tool.ruff.lint.isort]
 known-first-party = [
   "deadline_test_fixtures"
 ]

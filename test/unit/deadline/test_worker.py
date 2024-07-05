@@ -10,7 +10,7 @@ from unittest.mock import ANY, MagicMock, call, mock_open, patch
 import boto3
 import pytest
 from botocore.exceptions import ClientError
-from moto import mock_ec2, mock_iam, mock_s3, mock_ssm
+from moto import mock_aws
 
 from deadline_test_fixtures.deadline import worker as mod
 from deadline_test_fixtures import (
@@ -29,7 +29,7 @@ from deadline_test_fixtures import (
 
 @pytest.fixture(autouse=True)
 def moto_mocks() -> Generator[None, None, None]:
-    with mock_ec2(), mock_iam(), mock_s3(), mock_ssm():
+    with mock_aws():
         yield
 
 
