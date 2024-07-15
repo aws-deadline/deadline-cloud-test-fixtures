@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import boto3
 import pytest
 from botocore.exceptions import ClientError, WaiterError
-from moto import mock_s3
+from moto import mock_aws
 
 from deadline_test_fixtures import job_attachment_manager as jam_module
 from deadline_test_fixtures import DeadlineClient, JobAttachmentManager
@@ -26,7 +26,7 @@ class TestJobAttachmentManager:
     def job_attachment_manager(
         self,
     ) -> Generator[JobAttachmentManager, None, None]:
-        with mock_s3():
+        with mock_aws():
             yield JobAttachmentManager(
                 s3_client=boto3.client("s3"),
                 deadline_client=DeadlineClient(MagicMock()),

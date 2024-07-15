@@ -310,21 +310,16 @@ def deadline_resources(
     """
     if os.getenv("BYO_DEADLINE", "false").lower() == "true":
         kwargs: dict[str, Any] = {}
+        resource_env_vars: list[str] = [
+            "FARM_ID",
+            "FLEET_ID",
+            "QUEUE_ID",
+        ]
 
-        all_fields = fields(DeadlineResources)
-        for f in all_fields:
-            env_var = f.name.upper()
+        for env_var in resource_env_vars:
             if env_var in os.environ:
-                kwargs[f.name] = os.environ[env_var]
+                kwargs[env_var.lower()] = os.environ[env_var]
 
-        required_fields = [f for f in all_fields if (MISSING == f.default == f.default_factory)]
-        assert all([rf.name in kwargs for rf in required_fields]), (
-            "Not all Deadline resources have been fulfilled via environment variables. Expected "
-            + f"values for {[f.name.upper() for f in required_fields]}, but got {kwargs}"
-        )
-        LOG.info(
-            f"All Deadline resources have been fulfilled via environment variables. Using {kwargs}"
-        )
         yield DeadlineResources(**kwargs)
     else:
         LOG.info("Deploying Deadline resources")
