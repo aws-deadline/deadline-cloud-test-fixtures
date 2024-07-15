@@ -1,3 +1,12 @@
+## 0.11.0 (2024-07-15)
+
+### BREAKING CHANGES
+* Refactoring EC2InstanceWorker to Split out PosixInstanceWorker and WindowsInstanceWorker (#125) ([`5705df4`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/5705df43bfebf86653858288bc3121e6a1b5bef7))
+
+
+### Bug Fixes
+* BYO Deadline now looks specifically for resource env vars. (#128) ([`852fef3`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/852fef32c3ed42ae327120ff1a3d90fe4478d2a6))
+
 ## 0.10.0 (2024-07-04)
 
 ### BREAKING CHANGES
