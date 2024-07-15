@@ -15,7 +15,7 @@ import pytest
 import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import InitVar, dataclass, field, fields, MISSING
-from typing import Any, Generator, TypeVar
+from typing import Any, Generator, Type, TypeVar
 
 from .deadline.client import DeadlineClient
 from .deadline.resources import (
@@ -28,8 +28,10 @@ from .deadline.worker import (
     DeadlineWorker,
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
-    EC2InstanceWorker,
     PipInstall,
+    PosixInstanceWorker,
+    WindowsInstanceWorker,
+    EC2InstanceWorker,
 )
 from .models import (
     CodeArtifactRepositoryInfo,
@@ -39,6 +41,7 @@ from .models import (
     ServiceModel,
     S3Object,
     OperatingSystem,
+    WindowsSessionUser,
 )
 from .cloudformation import WorkerBootstrapStack
 from .job_attachment_manager import JobAttachmentManager
@@ -55,30 +58,56 @@ class BootstrapResources:
     worker_instance_profile_name: str | None = None
 
     job_attachments: JobAttachmentSettings | None = field(init=False, default=None)
-    job_attachments_bucket_name: InitVar[str | None] = None
-    job_attachments_root_prefix: InitVar[str | None] = None
+    job_attachments_bucket_name: str | None = None
+    job_attachments_root_prefix: str | None = None
+
+    windows_run_as_user: str | None = None
+    windows_run_as_user_secret_arn: str | None = None
+    posix_run_as_user: str | None = None
+    posix_run_as_user_group: str | None = None
 
     job_run_as_user: JobRunAsUser = field(
         default_factory=lambda: JobRunAsUser(
-            posix=PosixSessionUser("", ""), runAs="WORKER_AGENT_USER"
+            posix=PosixSessionUser("", ""),
+            runAs="WORKER_AGENT_USER",
+            windows=WindowsSessionUser("", ""),
         )
     )
 
-    def __post_init__(
-        self,
-        job_attachments_bucket_name: str | None,
-        job_attachments_root_prefix: str | None,
-    ) -> None:
-        if job_attachments_bucket_name or job_attachments_root_prefix:
+    def __post_init__(self) -> None:
+        if self.job_attachments_bucket_name or self.job_attachments_root_prefix:
             assert (
-                job_attachments_bucket_name and job_attachments_root_prefix
+                self.job_attachments_bucket_name and self.job_attachments_root_prefix
             ), "Cannot provide partial Job Attachments settings, both bucket name and root prefix are required"
             object.__setattr__(
                 self,
                 "job_attachments",
                 JobAttachmentSettings(
-                    bucket_name=job_attachments_bucket_name,
-                    root_prefix=job_attachments_root_prefix,
+                    bucket_name=self.job_attachments_bucket_name,
+                    root_prefix=self.job_attachments_root_prefix,
+                ),
+            )
+        if (
+            self.windows_run_as_user
+            or self.windows_run_as_user_secret_arn
+            or self.posix_run_as_user
+            or self.posix_run_as_user_group
+        ):
+            assert (
+                self.windows_run_as_user and self.windows_run_as_user_secret_arn
+            ), "Cannot provide partial Windows run as user settings, both user name and secret arn are required"
+            assert (
+                self.posix_run_as_user and self.posix_run_as_user_group
+            ), "Cannot provide partial Posix run as user settings, both user name and user group are required"
+            object.__setattr__(
+                self,
+                "job_run_as_user",
+                JobRunAsUser(
+                    posix=PosixSessionUser(self.posix_run_as_user, self.posix_run_as_user_group),
+                    runAs="QUEUE_CONFIGURED_USER",
+                    windows=WindowsSessionUser(
+                        self.windows_run_as_user, self.windows_run_as_user_secret_arn
+                    ),
                 ),
             )
 
@@ -228,10 +257,10 @@ def bootstrap_resources(request: pytest.FixtureRequest) -> BootstrapResources:
         required_fields = [f for f in all_fields if (MISSING == f.default == f.default_factory)]
         assert all([rf.name in kwargs for rf in required_fields]), (
             "Not all bootstrap resources have been fulfilled via environment variables. Expected "
-            + f"values for {[f.name.upper() for f in required_fields]}, but got {kwargs}"
+            + f"values for {[f.name.upper() for f in required_fields]}, but got \n{json.dumps(kwargs, sort_keys=True, indent=4)}"
         )
         LOG.info(
-            f"All bootstrap resources have been fulfilled via environment variables. Using {kwargs}"
+            f"All bootstrap resources have been fulfilled via environment variables. Using \n{json.dumps(kwargs, sort_keys=True, indent=4)}"
         )
         return BootstrapResources(**kwargs)
     else:
@@ -419,7 +448,7 @@ def worker_config(
             dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
         else:
             dest_path = posixpath.join(
-                "%USERPROFILE%\\AppData\\Local\\Temp", os.path.basename(resolved_whl_path)
+                "$env:USERPROFILE\\AppData\\Local\\Temp", os.path.basename(resolved_whl_path)
             )
         file_mappings = [(resolved_whl_path, dest_path)]
 
@@ -443,7 +472,7 @@ def worker_config(
         if operating_system.name == "AL2023":
             dst_path = posixpath.join("/tmp", src_path.name)
         else:
-            dst_path = posixpath.join("%USERPROFILE%\\AppData\\Local\\Temp", src_path.name)
+            dst_path = posixpath.join("$env:USERPROFILE\\AppData\\Local\\Temp", src_path.name)
         LOG.info(f"The service model will be copied to {dst_path} on the Worker environment")
         file_mappings.append((str(src_path), dst_path))
 
@@ -451,8 +480,6 @@ def worker_config(
             farm_id=deadline_resources.farm.id,
             fleet=deadline_resources.fleet,
             region=region,
-            user=os.getenv("WORKER_POSIX_USER", "deadline-worker"),
-            group=os.getenv("WORKER_POSIX_SHARED_GROUP", "shared-group"),
             allow_shutdown=True,
             worker_agent_install=PipInstall(
                 requirement_specifiers=[worker_agent_requirement_specifier],
@@ -460,7 +487,21 @@ def worker_config(
             ),
             service_model_path=dst_path,
             file_mappings=file_mappings or None,
-            operating_system=operating_system,
+        )
+
+
+@pytest.fixture(scope="session")
+def ec2_worker_type(request: pytest.FixtureRequest) -> Generator[Type[DeadlineWorker], None, None]:
+    # Allows overriding the base EC2InstanceWorker type with another derived type.
+    operating_system = request.getfixturevalue("operating_system")
+
+    if operating_system.name == "AL2023":
+        yield PosixInstanceWorker
+    elif operating_system.name == "WIN2022":
+        yield WindowsInstanceWorker
+    else:
+        raise ValueError(
+            'Invalid value provided for "operating_system", valid options are \'OperatingSystem("AL2023")\' or \'OperatingSystem("WIN2022")\'.'
         )
 
 
@@ -468,6 +509,7 @@ def worker_config(
 def worker(
     request: pytest.FixtureRequest,
     worker_config: DeadlineWorkerConfiguration,
+    ec2_worker_type: Type[EC2InstanceWorker],
 ) -> Generator[DeadlineWorker, None, None]:
     """
     Gets a DeadlineWorker for use in tests.
@@ -498,6 +540,9 @@ def worker(
         ami_id = os.getenv("AMI_ID")
         subnet_id = os.getenv("SUBNET_ID")
         security_group_id = os.getenv("SECURITY_GROUP_ID")
+        instance_type = os.getenv("WORKER_INSTANCE_TYPE", default="t3.micro")
+        instance_shutdown_behavior = os.getenv("WORKER_INSTANCE_SHUTDOWN_BEHAVIOR", default="stop")
+
         assert subnet_id, "SUBNET_ID is required when deploying an EC2 worker"
         assert security_group_id, "SECURITY_GROUP_ID is required when deploying an EC2 worker"
 
@@ -511,7 +556,7 @@ def worker(
         ssm_client = boto3.client("ssm")
         deadline_client = boto3.client("deadline")
 
-        worker = EC2InstanceWorker(
+        worker = ec2_worker_type(
             ec2_client=ec2_client,
             s3_client=s3_client,
             deadline_client=deadline_client,
@@ -522,6 +567,8 @@ def worker(
             security_group_id=security_group_id,
             instance_profile_name=bootstrap_resources.worker_instance_profile_name,
             configuration=worker_config,
+            instance_type=instance_type,
+            instance_shutdown_behavior=instance_shutdown_behavior,
         )
 
     def stop_worker():

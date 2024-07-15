@@ -19,7 +19,7 @@ from deadline_test_fixtures import (
     TaskStatus,
 )
 from deadline_test_fixtures.deadline import resources as mod
-from deadline_test_fixtures.models import JobRunAsUser, PosixSessionUser
+from deadline_test_fixtures.models import JobRunAsUser, PosixSessionUser, WindowsSessionUser
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +101,7 @@ class TestQueue:
         job_run_as_user = JobRunAsUser(
             posix=PosixSessionUser(user="test-user", group="test-group"),
             runAs="QUEUE_CONFIGURED_USER",
+            windows=WindowsSessionUser(user="job-user", passwordArn="dummyvalue"),
         )
 
         # WHEN

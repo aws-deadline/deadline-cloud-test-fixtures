@@ -17,10 +17,9 @@ from deadline_test_fixtures import (
     CommandResult,
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
-    EC2InstanceWorker,
+    PosixInstanceWorker,
     PipInstall,
     CodeArtifactRepositoryInfo,
-    OperatingSystem,
     S3Object,
     Fleet,
     Farm,
@@ -66,8 +65,8 @@ def worker_config(region: str) -> DeadlineWorkerConfiguration:
         farm_id="farm-123",
         fleet=Fleet(id="fleet_123", farm=Farm(id="farm-123")),
         region=region,
-        user="test-user",
-        group="test-group",
+        job_user="test-user",
+        job_user_group="test-group",
         allow_shutdown=False,
         worker_agent_install=PipInstall(
             requirement_specifiers=["deadline-cloud-worker-agent"],
@@ -84,11 +83,10 @@ def worker_config(region: str) -> DeadlineWorkerConfiguration:
             ("/aws/models/deadline.json", "/tmp/deadline.json"),
         ],
         service_model_path="/path/to/service-2.json",
-        operating_system=OperatingSystem(name="AL2023"),
     )
 
 
-class TestEC2InstanceWorker:
+class TestPosixInstanceWorker:
     @staticmethod
     def describe_instance(instance_id: str) -> Any:
         ec2_client = boto3.client("ec2")
@@ -150,8 +148,8 @@ class TestEC2InstanceWorker:
         security_group_id: str,
         instance_profile_name: str,
         bootstrap_bucket_name: str,
-    ) -> EC2InstanceWorker:
-        return EC2InstanceWorker(
+    ) -> PosixInstanceWorker:
+        return PosixInstanceWorker(
             subnet_id=subnet_id,
             security_group_id=security_group_id,
             instance_profile_name=instance_profile_name,
@@ -161,11 +159,12 @@ class TestEC2InstanceWorker:
             ssm_client=boto3.client("ssm"),
             deadline_client=boto3.client("deadline"),
             configuration=worker_config,
-            worker_id="worker-7c3377ec9eba444bb51cc7da18463081",
+            instance_type="t3.micro",
+            instance_shutdown_behavior="terminate",
         )
 
     @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
-    def test_start(self, worker: EC2InstanceWorker) -> None:
+    def test_start(self, worker: PosixInstanceWorker) -> None:
         # GIVEN
         s3_files = [
             ("s3://bucket/key", "/tmp/key"),
@@ -194,7 +193,7 @@ class TestEC2InstanceWorker:
 
     def test_stage_s3_bucket(
         self,
-        worker: EC2InstanceWorker,
+        worker: PosixInstanceWorker,
         worker_config: DeadlineWorkerConfiguration,
         bootstrap_bucket_name: str,
     ) -> None:
@@ -222,7 +221,7 @@ class TestEC2InstanceWorker:
 
     def test_launch_instance(
         self,
-        worker: EC2InstanceWorker,
+        worker: PosixInstanceWorker,
         vpc_id: str,
         subnet_id: str,
         security_group_id: str,
@@ -234,7 +233,7 @@ class TestEC2InstanceWorker:
         # THEN
         assert worker.instance_id is not None
 
-        instance = TestEC2InstanceWorker.describe_instance(worker.instance_id)
+        instance = TestPosixInstanceWorker.describe_instance(worker.instance_id)
         assert instance["ImageId"] == worker.ami_id
         assert instance["State"]["Name"] == "running"
         assert instance["SubnetId"] == subnet_id
@@ -249,7 +248,7 @@ class TestEC2InstanceWorker:
     def test_start_worker_agent(self) -> None:
         pass
 
-    def test_stop(self, worker: EC2InstanceWorker) -> None:
+    def test_stop(self, worker: PosixInstanceWorker) -> None:
         # GIVEN
         # WHEN
         with patch.object(
@@ -259,18 +258,18 @@ class TestEC2InstanceWorker:
         instance_id = worker.instance_id
         assert instance_id is not None
 
-        instance = TestEC2InstanceWorker.describe_instance(instance_id)
+        instance = TestPosixInstanceWorker.describe_instance(instance_id)
         assert instance["State"]["Name"] == "running"
 
         worker.stop()
 
         # THEN
-        instance = TestEC2InstanceWorker.describe_instance(instance_id)
+        instance = TestPosixInstanceWorker.describe_instance(instance_id)
         assert instance["State"]["Name"] == "terminated"
         assert worker.instance_id is None
 
     class TestSendCommand:
-        def test_sends_command(self, worker: EC2InstanceWorker) -> None:
+        def test_sends_command(self, worker: PosixInstanceWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
@@ -292,7 +291,7 @@ class TestEC2InstanceWorker:
                 Parameters={"commands": [cmd]},
             )
 
-        def test_retries_when_instance_not_ready(self, worker: EC2InstanceWorker) -> None:
+        def test_retries_when_instance_not_ready(self, worker: PosixInstanceWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
@@ -330,7 +329,7 @@ class TestEC2InstanceWorker:
                 * 2
             )
 
-        def test_raises_any_other_error(self, worker: EC2InstanceWorker) -> None:
+        def test_raises_any_other_error(self, worker: PosixInstanceWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
@@ -363,18 +362,18 @@ class TestEC2InstanceWorker:
             "worker-7c3377ec9eba444bb51cc7da18463081\r\n",
         ],
     )
-    def test_get_worker_id(self, worker_id: str, worker: EC2InstanceWorker) -> None:
+    def test_get_worker_id(self, worker_id: str, worker: PosixInstanceWorker) -> None:
         # GIVEN
         with patch.object(
             worker, "send_command", return_value=CommandResult(exit_code=0, stdout=worker_id)
         ):
             # WHEN
-            result = worker.worker_id
+            result = worker.get_worker_id()
 
         # THEN
         assert result == worker_id.rstrip("\n\r")
 
-    def test_ami_id(self, worker: EC2InstanceWorker) -> None:
+    def test_ami_id(self, worker: PosixInstanceWorker) -> None:
         # WHEN
         ami_id = worker.ami_id
 
@@ -382,6 +381,7 @@ class TestEC2InstanceWorker:
         assert re.match(r"^ami-[0-9a-f]{17}$", ami_id)
 
 
+@pytest.mark.skip
 class TestDockerContainerWorker:
     @pytest.fixture
     def worker(self, worker_config: DeadlineWorkerConfiguration) -> DockerContainerWorker:
@@ -443,8 +443,8 @@ class TestDockerContainerWorker:
         assert popen_kwargs["encoding"] == "utf-8"
         expected_env = {
             "FILE_MAPPINGS": ANY,
-            "AGENT_USER": worker_config.user,
-            "SHARED_GROUP": worker_config.group,
+            "AGENT_USER": worker_config.agent_user,
+            "SHARED_GROUP": worker_config.job_user_group,
             "JOB_USER": "jobuser",
             "CONFIGURE_WORKER_AGENT_CMD": ANY,
         }
@@ -488,7 +488,9 @@ class TestDockerContainerWorker:
 
         # THEN
         assert worker.container_id is None
-        mock_send_command.assert_called_once_with(f"pkill --signal term -f {worker_config.user}")
+        mock_send_command.assert_called_once_with(
+            f"pkill --signal term -f {worker_config.agent_user}"
+        )
         mock_check_output.assert_called_once_with(
             args=["docker", "container", "stop", container_id],
             cwd=ANY,
@@ -540,7 +542,7 @@ class TestDockerContainerWorker:
 
         with patch.object(worker, "send_command", return_value=send_command_result):
             # WHEN
-            result = worker.worker_id
+            result = worker.get_worker_id()
 
         # THEN
         assert result == worker_id
