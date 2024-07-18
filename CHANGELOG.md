@@ -1,3 +1,10 @@
+## 0.12.0 (2024-07-18)
+
+### BREAKING CHANGES
+* Add stop/start worker agent service method (#130) ([`0ea4b3c`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/0ea4b3cff9da04e4573b57a06229812b79e07ced))
+
+
+
 ## 0.11.0 (2024-07-15)
 
 ### BREAKING CHANGES
