@@ -105,8 +105,10 @@ class DeadlineWorkerConfiguration:
 
     """Additional job users to configure for Posix workers"""
     job_users: list[PosixSessionUser] = field(
-        default_factory=lambda: [PosixSessionUser("job-user", "deadline-job-users")]
+        default_factory=lambda: [PosixSessionUser("job-user", "job-user")]
     )
+    """Additional job users to configure for Windows workers"""
+    windows_job_users: list = field(default_factory=lambda: ["job-user"])
 
 
 @dataclass
@@ -154,6 +156,14 @@ class EC2InstanceWorker(DeadlineWorker):
         self, *, config: DeadlineWorkerConfiguration
     ) -> str:  # pragma: no cover
         raise NotImplementedError("'configure_worker_command' was not implemented.")
+
+    @abc.abstractmethod
+    def start_worker_service(self) -> None:  # pragma: no cover
+        raise NotImplementedError("'_start_worker_service' was not implemented.")
+
+    @abc.abstractmethod
+    def stop_worker_service(self) -> None:  # pragma: no cover
+        raise NotImplementedError("'_stop_worker_service' was not implemented.")
 
     @abc.abstractmethod
     def get_worker_id(self) -> str:
@@ -422,9 +432,8 @@ class WindowsInstanceWorker(EC2InstanceWorker):
         cmd_result = self.send_command(
             " ; ".join(
                 [
-                    "echo Waiting 20s for the agent service to get started",
-                    "sleep 20",
-                    "echo 'Running running Get-Process to check if the agent is running'",
+                    "echo 'Running Get-Process to check if the agent is running'",
+                    'for($i=1; $i -le 30 -and "" -ne $err ; $i++){sleep $i; Get-Process pythonservice -ErrorVariable err}',
                     "IF(Get-Process pythonservice){echo 'service is running'}ELSE{exit 1}",
                 ]
             ),
@@ -486,8 +495,24 @@ class WindowsInstanceWorker(EC2InstanceWorker):
 
     def userdata(self, s3_files) -> str:
         copy_s3_command = ""
+        job_users_cmds = []
+
         if s3_files:
             copy_s3_command = " ; ".join([f"aws s3 cp {s3_uri} {dst}" for s3_uri, dst in s3_files])
+
+        if self.configuration.windows_job_users:
+            for job_user in self.configuration.windows_job_users:
+                job_users_cmds.append(
+                    f"New-LocalUser -Name {job_user} -Password $password -FullName {job_user} -Description {job_user}"
+                )
+                job_users_cmds.append(
+                    f"$Cred = New-Object System.Management.Automation.PSCredential {job_user}, $password"
+                )
+                job_users_cmds.append(
+                    'Start-Process cmd.exe -Credential $Cred -ArgumentList "/C" -LoadUserProfile -NoNewWindow'
+                )
+
+        configure_job_users = "\n".join(job_users_cmds)
 
         userdata = f"""<powershell>
             Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -OutFile "C:\python-3.11.9-amd64.exe"
@@ -500,13 +525,24 @@ class WindowsInstanceWorker(EC2InstanceWorker):
             $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
             $secret = aws secretsmanager get-secret-value --secret-id WindowsPasswordSecret --query SecretString --output text | ConvertFrom-Json
             $password = ConvertTo-SecureString -String $($secret.password) -AsPlainText -Force
-            New-LocalUser -Name "{self.configuration.job_user}" -Password $password -FullName "{self.configuration.job_user}" -Description "job user"
-            $Cred = New-Object System.Management.Automation.PSCredential "{self.configuration.job_user}", $password
-            Start-Process cmd.exe -Credential $Cred -ArgumentList "/C" -LoadUserProfile -NoNewWindow
             {copy_s3_command}
+            {configure_job_users}
             </powershell>"""
 
         return userdata
+
+    def start_worker_service(self):
+        LOG.info("Sending command to start the Worker Agent service")
+
+        cmd_result = self.send_command('Start-Service -Name "DeadlineWorker"')
+
+        assert cmd_result.exit_code == 0, f"Failed to start Worker Agent service: : {cmd_result}"
+
+    def stop_worker_service(self):
+        LOG.info("Sending command to stop the Worker Agent service")
+        cmd_result = self.send_command('Stop-Service -Name "DeadlineWorker"')
+
+        assert cmd_result.exit_code == 0, f"Failed to stop Worker Agent service: : {cmd_result}"
 
     def ami_ssm_param_name(self) -> str:
         # Grab the latest Windows Server 2022 AMI
@@ -520,6 +556,7 @@ class WindowsInstanceWorker(EC2InstanceWorker):
         cmd_result = self.send_command(
             " ; ".join(
                 [
+                    'for($i=1; $i -le 20 -and "" -ne $err ; $i++){sleep $i; Get-Item C:\ProgramData\Amazon\Deadline\Cache\worker.json -ErrorVariable err 1>$null}',
                     "$worker=Get-Content -Raw C:\ProgramData\Amazon\Deadline\Cache\worker.json | ConvertFrom-Json",
                     "echo $worker.worker_id",
                 ]
@@ -551,7 +588,7 @@ class PosixInstanceWorker(EC2InstanceWorker):
         LOG.info(f"Sending SSM command to configure Worker agent on instance {self.instance_id}")
 
         cmd_result = self.send_command(
-            f"{self.configure_worker_command(config=self.configuration)}"
+            f"cd /home/{self.configuration.agent_user}; . .venv/bin/activate; AWS_DEFAULT_REGION={self.configuration.region} {self.configure_worker_command(config=self.configuration)}"
         )
         assert cmd_result.exit_code == 0, f"Failed to configure Worker agent: {cmd_result}"
         LOG.info("Successfully configured Worker agent")
@@ -665,6 +702,19 @@ class PosixInstanceWorker(EC2InstanceWorker):
         """
 
         return userdata
+
+    def start_worker_service(self):
+        LOG.info("Sending command to start the Worker Agent service")
+
+        cmd_result = self.send_command("systemctl start deadline-worker")
+
+        assert cmd_result.exit_code == 0, f"Failed to start Worker Agent service: {cmd_result}"
+
+    def stop_worker_service(self):
+        LOG.info("Sending command to stop the Worker Agent service")
+        cmd_result = self.send_command("systemctl stop deadline-worker")
+
+        assert cmd_result.exit_code == 0, f"Failed to start Worker Agent service: {cmd_result}"
 
     def get_worker_id(self) -> str:
         cmd_result = self.send_command("cat /var/lib/deadline/worker.json  | jq -r '.worker_id'")
