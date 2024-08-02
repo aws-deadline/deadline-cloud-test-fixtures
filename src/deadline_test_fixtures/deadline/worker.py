@@ -717,7 +717,17 @@ class PosixInstanceWorker(EC2InstanceWorker):
         assert cmd_result.exit_code == 0, f"Failed to start Worker Agent service: {cmd_result}"
 
     def get_worker_id(self) -> str:
-        cmd_result = self.send_command("cat /var/lib/deadline/worker.json  | jq -r '.worker_id'")
+        # There can be a race condition, so we may need to wait a little bit for the status file to be written.
+
+        worker_state_filename = "/var/lib/deadline/worker.json"
+        cmd_result = self.send_command(
+            " && ".join(
+                [
+                    f"t=0 && while [ $t -le 10 ] && ! (test -f {worker_state_filename}); do sleep $t; t=$[$t+1]; done"
+                    f"cat {worker_state_filename} | jq -r '.worker_id'"
+                ]
+            )
+        )
         assert cmd_result.exit_code == 0, f"Failed to get Worker ID: {cmd_result}"
 
         worker_id = cmd_result.stdout.rstrip("\n\r")
