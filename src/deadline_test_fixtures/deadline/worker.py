@@ -177,13 +177,13 @@ class EC2InstanceWorker(DeadlineWorker):
         self._launch_instance(s3_files=s3_files)
         self._start_worker_agent()
 
-    def stop(self) -> None:
+    def stop(self, wait_until_stopped: Optional[bool] = True) -> None:
         LOG.info(f"Terminating EC2 instance {self.instance_id}")
         self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
 
         self.instance_id = None
 
-        if not self.configuration.fleet.autoscaling:
+        if wait_until_stopped and not self.configuration.fleet.autoscaling:
             try:
                 self.wait_until_stopped()
             except TimeoutError:
