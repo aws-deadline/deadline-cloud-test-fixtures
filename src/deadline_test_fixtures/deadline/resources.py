@@ -6,7 +6,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, fields
 from enum import Enum
-from typing import Any, Callable, Literal, TYPE_CHECKING
+from typing import Any, Callable, Literal, TYPE_CHECKING, Optional
 
 from botocore.client import BaseClient
 
@@ -579,7 +579,7 @@ class Job:
         *,
         client: DeadlineClient,
         wait_interval_sec: int = 10,
-        max_retries: int | None = None,
+        max_retries: Optional[int] = 20,
     ) -> None:
         """
         Waits until the job is complete.
@@ -587,7 +587,7 @@ class Job:
 
         Args:
             wait_interval_sec (int, optional): Interval between waits in seconds. Defaults to 5.
-            max_retries (int, optional): Maximum retry count. Defaults to None.
+            max_retries (int, optional): Maximum retry count. Defaults to 20.
         """
 
         def _is_job_complete():
