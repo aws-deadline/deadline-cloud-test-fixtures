@@ -60,7 +60,7 @@ class Queue:
         client: DeadlineClient,
         display_name: str,
         farm: Farm,
-        job_run_as_user: JobRunAsUser,
+        job_run_as_user: JobRunAsUser | None = None,
         role_arn: str | None = None,
         job_attachments: JobAttachmentSettings | None = None,
         raw_kwargs: dict | None = None,
@@ -73,7 +73,7 @@ class Queue:
                 "jobAttachmentSettings": (
                     job_attachments.as_queue_settings() if job_attachments else None
                 ),
-                "jobRunAsUser": asdict(job_run_as_user),
+                "jobRunAsUser": asdict(job_run_as_user) if job_run_as_user else None,
                 **(raw_kwargs or {}),
             }
         )

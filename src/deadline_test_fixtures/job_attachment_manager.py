@@ -14,9 +14,6 @@ from .deadline import (
 
 from .models import (
     JobAttachmentSettings,
-    JobRunAsUser,
-    PosixSessionUser,
-    WindowsSessionUser,
 )
 from uuid import uuid4
 
@@ -52,11 +49,6 @@ class JobAttachmentManager:
                 client=self.deadline_client,
                 display_name="job_attachments_test_queue",
                 farm=Farm(self.farm_id),
-                job_run_as_user=JobRunAsUser(
-                    posix=PosixSessionUser("", ""),
-                    runAs="WORKER_AGENT_USER",
-                    windows=WindowsSessionUser("", ""),
-                ),
                 job_attachments=JobAttachmentSettings(
                     bucket_name=self.bucket_name, root_prefix=self.bucket_root_prefix
                 ),
@@ -65,11 +57,6 @@ class JobAttachmentManager:
                 client=self.deadline_client,
                 display_name="job_attachments_test_no_settings_queue",
                 farm=Farm(self.farm_id),
-                job_run_as_user=JobRunAsUser(
-                    posix=PosixSessionUser("", ""),
-                    runAs="WORKER_AGENT_USER",
-                    windows=WindowsSessionUser("", ""),
-                ),
             )
 
         except (ClientError, WaiterError):
