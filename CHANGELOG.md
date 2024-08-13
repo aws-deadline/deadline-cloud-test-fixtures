@@ -1,3 +1,15 @@
+## 0.12.1 (2024-08-13)
+
+
+### Features
+* linux ec2-based tests test installer-based user creation (#138) ([`8cf1ffb`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/8cf1ffb3fc054370adfa357ffe6657e928263a1e))
+
+### Bug Fixes
+* add missing comma to ssm command (#137) ([`b8db187`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/b8db1872411ac28fe7273dda31275c2812bac0e1))
+* remove runas from job attachment fixture (#136) ([`28767c7`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/28767c7bf1a87bab9e4ae75997bb74f21e2fe3e4))
+* Add default max_retries to Job.wait_until_complete to avoid infinite waiting (#134) ([`6d4023d`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/6d4023d244225a68d282839d60d342138a9e25d2))
+* resolve get_worker_id race by waiting for worker.json to get written (#133) ([`1f27578`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/1f27578da0f2fe9cc241334acd439d9e1d741a1d))
+
 ## 0.12.0 (2024-07-18)
 
 ### BREAKING CHANGES
