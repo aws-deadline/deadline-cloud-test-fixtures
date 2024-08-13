@@ -619,7 +619,7 @@ class PosixInstanceWorker(EC2InstanceWorker):
 
         cmds = [
             "source /opt/deadline/worker/bin/activate",
-            "AWS_DEFAULT_REGION={self.configuration.region}",
+            f"AWS_DEFAULT_REGION={self.configuration.region}",
             config.worker_agent_install.install_command_for_linux,
             *(config.pre_install_commands or []),
             # fmt: off
