@@ -583,13 +583,14 @@ class PosixInstanceWorker(EC2InstanceWorker):
     def ssm_document_name(self) -> str:
         return "AWS-RunShellScript"
 
+    def send_command(self, command: str) -> CommandResult:
+        return super().send_command("set -eou pipefail; " + command)
+
     def _start_worker_agent(self) -> None:
         assert self.instance_id
         LOG.info(f"Sending SSM command to configure Worker agent on instance {self.instance_id}")
 
-        cmd_result = self.send_command(
-            f"cd /home/{self.configuration.agent_user}; . .venv/bin/activate; AWS_DEFAULT_REGION={self.configuration.region} {self.configure_worker_command(config=self.configuration)}"
-        )
+        cmd_result = self.send_command(self.configure_worker_command(config=self.configuration))
         assert cmd_result.exit_code == 0, f"Failed to configure Worker agent: {cmd_result}"
         LOG.info("Successfully configured Worker agent")
 
@@ -617,6 +618,8 @@ class PosixInstanceWorker(EC2InstanceWorker):
         """Get the command to configure the Worker. This must be run as root."""
 
         cmds = [
+            "source /opt/deadline/worker/bin/activate",
+            "AWS_DEFAULT_REGION={self.configuration.region}",
             config.worker_agent_install.install_command_for_linux,
             *(config.pre_install_commands or []),
             # fmt: off
@@ -633,7 +636,21 @@ class PosixInstanceWorker(EC2InstanceWorker):
                 + f"{'--start ' if config.start_service else ''}"
             ),
             # fmt: on
+            f"runuser --login {self.configuration.agent_user} --command 'echo \"source /opt/deadline/worker/bin/activate\" >> $HOME/.bashrc'",
         ]
+
+        for job_user in self.configuration.job_users:
+            cmds.append(f"usermod -a -G {job_user.group} {self.configuration.agent_user}")
+
+        sudoer_rule_users = ",".join(
+            [
+                self.configuration.agent_user,
+                *[job_user.user for job_user in self.configuration.job_users],
+            ]
+        )
+        cmds.append(
+            f'echo "{self.configuration.agent_user} ALL=({sudoer_rule_users}) NOPASSWD: ALL" > /etc/sudoers.d/{self.configuration.agent_user}'
+        )
 
         if config.service_model_path:
             cmds.append(
@@ -666,27 +683,13 @@ class PosixInstanceWorker(EC2InstanceWorker):
 
         if s3_files:
             copy_s3_command = " && ".join(
-                [
-                    f"aws s3 cp {s3_uri} {dst} && chown {self.configuration.agent_user} {dst}"
-                    for s3_uri, dst in s3_files
-                ]
+                [f"aws s3 cp {s3_uri} {dst} && chmod o+rx {dst}" for s3_uri, dst in s3_files]
             )
         for job_user in self.configuration.job_users:
             job_users_cmds.append(f"groupadd {job_user.group}")
             job_users_cmds.append(
                 f"useradd --create-home --system --shell=/bin/bash --groups={self.configuration.job_user_group} -g {job_user.group} {job_user.user}"
             )
-            job_users_cmds.append(f"usermod -a -G {job_user.group} {self.configuration.agent_user}")
-
-        sudoer_rule_users = ",".join(
-            [
-                self.configuration.agent_user,
-                *[job_user.user for job_user in self.configuration.job_users],
-            ]
-        )
-        job_users_cmds.append(
-            f'echo "{self.configuration.agent_user} ALL=({sudoer_rule_users}) NOPASSWD: ALL" > /etc/sudoers.d/{self.configuration.agent_user}'
-        )
 
         configure_job_users = "\n".join(job_users_cmds)
 
@@ -694,11 +697,11 @@ class PosixInstanceWorker(EC2InstanceWorker):
         # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
         set -x
         groupadd --system {self.configuration.job_user_group}
-        useradd --create-home --system --shell=/bin/bash --groups={self.configuration.job_user_group} {self.configuration.agent_user}
         {configure_job_users}
         {copy_s3_command}
 
-        runuser --login {self.configuration.agent_user} --command 'python3 -m venv $HOME/.venv && echo ". $HOME/.venv/bin/activate" >> $HOME/.bashrc'
+        mkdir /opt/deadline
+        python3 -m venv /opt/deadline/worker
         """
 
         return userdata

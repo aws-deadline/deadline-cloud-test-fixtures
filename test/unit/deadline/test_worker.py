@@ -288,7 +288,7 @@ class TestPosixInstanceWorker:
             send_command_spy.assert_called_once_with(
                 InstanceIds=[worker.instance_id],
                 DocumentName="AWS-RunShellScript",
-                Parameters={"commands": [cmd]},
+                Parameters={"commands": ["set -eou pipefail; " + cmd]},
             )
 
         def test_retries_when_instance_not_ready(self, worker: PosixInstanceWorker) -> None:
@@ -323,7 +323,7 @@ class TestPosixInstanceWorker:
                     call(
                         InstanceIds=[worker.instance_id],
                         DocumentName="AWS-RunShellScript",
-                        Parameters={"commands": [cmd]},
+                        Parameters={"commands": ["set -eou pipefail; " + cmd]},
                     )
                 ]
                 * 2
@@ -351,7 +351,7 @@ class TestPosixInstanceWorker:
             mock_send_command.assert_called_once_with(
                 InstanceIds=[worker.instance_id],
                 DocumentName="AWS-RunShellScript",
-                Parameters={"commands": [cmd]},
+                Parameters={"commands": ["set -eou pipefail; " + cmd]},
             )
 
     @pytest.mark.parametrize(
