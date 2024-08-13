@@ -253,7 +253,7 @@ class EC2InstanceWorker(DeadlineWorker):
         #
         # If we send an SSM command then we will get an InvalidInstanceId error
         # if the instance isn't in that state.
-        NUM_RETRIES = 30
+        NUM_RETRIES = 60
         SLEEP_INTERVAL_S = 10
         for i in range(0, NUM_RETRIES):
             LOG.info(f"Sending SSM command to instance {self.instance_id}")
