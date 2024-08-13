@@ -723,8 +723,8 @@ class PosixInstanceWorker(EC2InstanceWorker):
         cmd_result = self.send_command(
             " && ".join(
                 [
-                    f"t=0 && while [ $t -le 10 ] && ! (test -f {worker_state_filename}); do sleep $t; t=$[$t+1]; done"
-                    f"cat {worker_state_filename} | jq -r '.worker_id'"
+                    f"t=0 && while [ $t -le 10 ] && ! (test -f {worker_state_filename}); do sleep $t; t=$[$t+1]; done",
+                    f"cat {worker_state_filename} | jq -r '.worker_id'",
                 ]
             )
         )
