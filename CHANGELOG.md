@@ -1,3 +1,11 @@
+## 0.12.2 (2024-08-14)
+
+
+
+### Bug Fixes
+* append export AWS_ENDPOINT_URL_DEADLINE at end of worker SSM commands (#141) ([`cfec139`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/cfec1399ad7a0c0d25b880d68d58a0ad1814a68b))
+* increase number of retries for SSM send_command to 60 (#140) ([`e768f38`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/e768f38a65eb10a728b298eae93929a2784bd80c))
+
 ## 0.12.1 (2024-08-13)
 
 
