@@ -485,8 +485,7 @@ class WindowsInstanceWorker(EC2InstanceWorker):
             LOG.info(
                 f"Using AWS_ENDPOINT_URL_DEADLINE: {os.environ.get('AWS_ENDPOINT_URL_DEADLINE')}"
             )
-            cmds.insert(
-                0,
+            cmds.append(
                 f"[System.Environment]::SetEnvironmentVariable('AWS_ENDPOINT_URL_DEADLINE', '{os.environ.get('AWS_ENDPOINT_URL_DEADLINE')}', [System.EnvironmentVariableTarget]::Machine); "
                 "$env:AWS_ENDPOINT_URL_DEADLINE = [System.Environment]::GetEnvironmentVariable('AWS_ENDPOINT_URL_DEADLINE','Machine')",
             )
@@ -670,8 +669,7 @@ class PosixInstanceWorker(EC2InstanceWorker):
             LOG.info(
                 f"Using AWS_ENDPOINT_URL_DEADLINE: {os.environ.get('AWS_ENDPOINT_URL_DEADLINE')}"
             )
-            cmds.insert(
-                0,
+            cmds.append(
                 f"runuser -l {config.agent_user} -s /bin/bash -c 'echo export AWS_ENDPOINT_URL_DEADLINE={os.environ.get('AWS_ENDPOINT_URL_DEADLINE')} >> ~/.bashrc'",
             )
 
