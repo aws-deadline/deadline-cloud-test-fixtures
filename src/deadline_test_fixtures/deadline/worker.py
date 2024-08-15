@@ -692,7 +692,7 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
         LOG.info("Sending command to stop the Worker Agent service")
         cmd_result = self.send_command("systemctl stop deadline-worker")
 
-        assert cmd_result.exit_code == 0, f"Failed to start Worker Agent service: {cmd_result}"
+        assert cmd_result.exit_code == 0, f"Failed to stop Worker Agent service: {cmd_result}"
 
     def get_worker_id(self) -> str:
         # There can be a race condition, so we may need to wait a little bit for the status file to be written.
