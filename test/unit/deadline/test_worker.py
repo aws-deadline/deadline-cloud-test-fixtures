@@ -17,7 +17,7 @@ from deadline_test_fixtures import (
     CommandResult,
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
-    PosixInstanceWorker,
+    PosixInstanceBuildWorker,
     PipInstall,
     CodeArtifactRepositoryInfo,
     S3Object,
@@ -86,7 +86,7 @@ def worker_config(region: str) -> DeadlineWorkerConfiguration:
     )
 
 
-class TestPosixInstanceWorker:
+class TestPosixInstanceBuildWorker:
     @staticmethod
     def describe_instance(instance_id: str) -> Any:
         ec2_client = boto3.client("ec2")
@@ -148,8 +148,8 @@ class TestPosixInstanceWorker:
         security_group_id: str,
         instance_profile_name: str,
         bootstrap_bucket_name: str,
-    ) -> PosixInstanceWorker:
-        return PosixInstanceWorker(
+    ) -> PosixInstanceBuildWorker:
+        return PosixInstanceBuildWorker(
             subnet_id=subnet_id,
             security_group_id=security_group_id,
             instance_profile_name=instance_profile_name,
@@ -164,7 +164,7 @@ class TestPosixInstanceWorker:
         )
 
     @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
-    def test_start(self, worker: PosixInstanceWorker) -> None:
+    def test_start(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         s3_files = [
             ("s3://bucket/key", "/tmp/key"),
@@ -193,7 +193,7 @@ class TestPosixInstanceWorker:
 
     def test_stage_s3_bucket(
         self,
-        worker: PosixInstanceWorker,
+        worker: PosixInstanceBuildWorker,
         worker_config: DeadlineWorkerConfiguration,
         bootstrap_bucket_name: str,
     ) -> None:
@@ -221,7 +221,7 @@ class TestPosixInstanceWorker:
 
     def test_launch_instance(
         self,
-        worker: PosixInstanceWorker,
+        worker: PosixInstanceBuildWorker,
         vpc_id: str,
         subnet_id: str,
         security_group_id: str,
@@ -233,7 +233,7 @@ class TestPosixInstanceWorker:
         # THEN
         assert worker.instance_id is not None
 
-        instance = TestPosixInstanceWorker.describe_instance(worker.instance_id)
+        instance = TestPosixInstanceBuildWorker.describe_instance(worker.instance_id)
         assert instance["ImageId"] == worker.ami_id
         assert instance["State"]["Name"] == "running"
         assert instance["SubnetId"] == subnet_id
@@ -248,7 +248,7 @@ class TestPosixInstanceWorker:
     def test_start_worker_agent(self) -> None:
         pass
 
-    def test_stop(self, worker: PosixInstanceWorker) -> None:
+    def test_stop(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         # WHEN
         with patch.object(
@@ -258,18 +258,18 @@ class TestPosixInstanceWorker:
         instance_id = worker.instance_id
         assert instance_id is not None
 
-        instance = TestPosixInstanceWorker.describe_instance(instance_id)
+        instance = TestPosixInstanceBuildWorker.describe_instance(instance_id)
         assert instance["State"]["Name"] == "running"
 
         worker.stop()
 
         # THEN
-        instance = TestPosixInstanceWorker.describe_instance(instance_id)
+        instance = TestPosixInstanceBuildWorker.describe_instance(instance_id)
         assert instance["State"]["Name"] == "terminated"
         assert worker.instance_id is None
 
     class TestSendCommand:
-        def test_sends_command(self, worker: PosixInstanceWorker) -> None:
+        def test_sends_command(self, worker: PosixInstanceBuildWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
@@ -291,7 +291,7 @@ class TestPosixInstanceWorker:
                 Parameters={"commands": ["set -eou pipefail; " + cmd]},
             )
 
-        def test_retries_when_instance_not_ready(self, worker: PosixInstanceWorker) -> None:
+        def test_retries_when_instance_not_ready(self, worker: PosixInstanceBuildWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
@@ -329,7 +329,7 @@ class TestPosixInstanceWorker:
                 * 2
             )
 
-        def test_raises_any_other_error(self, worker: PosixInstanceWorker) -> None:
+        def test_raises_any_other_error(self, worker: PosixInstanceBuildWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
@@ -362,7 +362,7 @@ class TestPosixInstanceWorker:
             "worker-7c3377ec9eba444bb51cc7da18463081\r\n",
         ],
     )
-    def test_get_worker_id(self, worker_id: str, worker: PosixInstanceWorker) -> None:
+    def test_get_worker_id(self, worker_id: str, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         with patch.object(
             worker, "send_command", return_value=CommandResult(exit_code=0, stdout=worker_id)
@@ -373,7 +373,7 @@ class TestPosixInstanceWorker:
         # THEN
         assert result == worker_id.rstrip("\n\r")
 
-    def test_ami_id(self, worker: PosixInstanceWorker) -> None:
+    def test_ami_id(self, worker: PosixInstanceBuildWorker) -> None:
         # WHEN
         ami_id = worker.ami_id
 

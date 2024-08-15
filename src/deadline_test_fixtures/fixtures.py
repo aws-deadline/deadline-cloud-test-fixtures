@@ -29,8 +29,8 @@ from .deadline.worker import (
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
     PipInstall,
-    PosixInstanceWorker,
-    WindowsInstanceWorker,
+    PosixInstanceBuildWorker,
+    WindowsInstanceBuildWorker,
     EC2InstanceWorker,
 )
 from .models import (
@@ -496,9 +496,9 @@ def ec2_worker_type(request: pytest.FixtureRequest) -> Generator[Type[DeadlineWo
     operating_system = request.getfixturevalue("operating_system")
 
     if operating_system.name == "AL2023":
-        yield PosixInstanceWorker
+        yield PosixInstanceBuildWorker
     elif operating_system.name == "WIN2022":
-        yield WindowsInstanceWorker
+        yield WindowsInstanceBuildWorker
     else:
         raise ValueError(
             'Invalid value provided for "operating_system", valid options are \'OperatingSystem("AL2023")\' or \'OperatingSystem("WIN2022")\'.'
