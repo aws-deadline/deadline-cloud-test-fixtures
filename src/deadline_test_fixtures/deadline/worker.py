@@ -536,7 +536,7 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
                 + f"--region {config.region} "
                 + f"--user {config.agent_user} "
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
-                + "--start"
+                + f"{'--start ' if config.start_service else ''}"
             ),
             # fmt: on
         ]
