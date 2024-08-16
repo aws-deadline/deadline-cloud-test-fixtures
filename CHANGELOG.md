@@ -1,3 +1,12 @@
+## 0.13.0 (2024-08-16)
+
+### BREAKING CHANGES
+* improve support for ec2 instance workers (#143) ([`afbc5fb`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/afbc5fb88f981976d60635cfb84d409eda65ffb8))
+
+
+### Bug Fixes
+* start windows service depending on the worker configuration (#144) ([`602bd3b`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/602bd3b511b048db418734fc1a29ed43fd0ba6b2))
+
 ## 0.12.2 (2024-08-14)
 
 
