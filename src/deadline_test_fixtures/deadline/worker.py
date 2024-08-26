@@ -536,7 +536,6 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
                 + f"--region {config.region} "
                 + f"--user {config.agent_user} "
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
-                + f"{'--start ' if config.start_service else ''}"
             ),
             # fmt: on
         ]
@@ -545,6 +544,9 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
             cmds.append(
                 f"Copy-Item -Path ~\\.aws\\* -Destination C:\\Users\\{config.agent_user}\\.aws\\models -Recurse; "
             )
+
+        if config.start_service:
+            cmds.append('Start-Service -Name "DeadlineWorker"')
 
         return "; ".join(cmds)
 
@@ -746,7 +748,6 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
                 + f"--group {config.job_user_group} "
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
                 + f"{'--no-install-service ' if config.no_install_service else ''}"
-                + f"{'--start ' if config.start_service else ''}"
             ),
             # fmt: on
             f"runuser --login {self.configuration.agent_user} --command 'echo \"source /opt/deadline/worker/bin/activate\" >> $HOME/.bashrc'",
@@ -766,6 +767,9 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
         )
 
         cmds.append(self.configure_agent_user_environment(config))
+
+        if config.start_service:
+            cmds.append("systemctl start deadline-worker")
 
         return " && ".join(cmds)
 
