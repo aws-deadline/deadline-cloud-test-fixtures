@@ -1,3 +1,11 @@
+## 0.13.1 (2024-08-26)
+
+
+
+### Bug Fixes
+
+* start service after running the installer instead of during (#146) ([`adac342`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/adac342fc6dff6c6174ae39783448b1020cc9a61))
+
 ## 0.13.0 (2024-08-16)
 
 ### BREAKING CHANGES
