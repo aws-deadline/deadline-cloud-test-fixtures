@@ -572,6 +572,7 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
         configure_job_users = "\n".join(job_users_cmds)
 
         userdata = f"""<powershell>
+$ProgressPreference = 'SilentlyContinue'
 Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe" -OutFile "C:\python-3.11.9-amd64.exe"
 $installerHash=(Get-FileHash "C:\python-3.11.9-amd64.exe" -Algorithm "MD5")
 $expectedHash="e8dcd502e34932eebcaf1be056d5cbcd"
