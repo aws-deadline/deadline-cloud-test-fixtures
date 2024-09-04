@@ -4,9 +4,12 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import re
+import time
 from dataclasses import asdict, dataclass, fields
+from datetime import timedelta
 from enum import Enum
-from typing import Any, Callable, Literal, TYPE_CHECKING, Optional
+from typing import Any, Callable, Generator, Literal, TYPE_CHECKING, Optional, Union
 
 from botocore.client import BaseClient
 
@@ -299,8 +302,34 @@ class StrEnum(str, Enum):
     pass
 
 
+class JobLifecycleStatus(StrEnum):
+    ARCHIVED = "ARCHIVED"
+    CREATE_COMPLETE = "CREATE_COMPLETE"
+    CREATE_FAILED = "CREATE_FAILED"
+    CREATE_IN_PROGRESS = "CREATE_IN_PROGRESS"
+    UPDATE_FAILED = "UPDATE_FAILED"
+    UPDATE_IN_PROGRESS = "UPDATE_IN_PROGRESS"
+    UPDATE_SUCCEEDED = "UPDATE_SUCCEEDED"
+    UPLOAD_FAILED = "UPLOAD_FAILED"
+    UPLOAD_IN_PROGRESS = "UPLOAD_IN_PROGRESS"
+
+
+class StepLifecycleStatus(StrEnum):
+    CREATE_COMPLETE = "CREATE_COMPLETE"
+    UPDATE_FAILED = "UPDATE_FAILED"
+    UPDATE_IN_PROGRESS = "UPDATE_IN_PROGRESS"
+    UPDATE_SUCCEEDED = "UPDATE_SUCCEEDED"
+
+
+class SessionLifecycleStatus(StrEnum):
+    ENDED = "ENDED"
+    STARTED = "STARTED"
+    UPDATE_FAILED = "UPDATE_FAILED"
+    UPDATE_IN_PROGRESS = "UPDATE_IN_PROGRESS"
+    UPDATE_SUCCEEDED = "UPDATE_SUCCEEDED"
+
+
 class TaskStatus(StrEnum):
-    UNKNOWN = "UNKNOWN"
     PENDING = "PENDING"
     READY = "READY"
     RUNNING = "RUNNING"
@@ -325,6 +354,37 @@ COMPLETE_TASK_STATUSES = set(
 
 
 @dataclass
+class IpAddresses:
+    ip_v4_addresses: list[str] | None = None
+    ip_v6_addresses: list[str] | None = None
+
+    @staticmethod
+    def from_api_response(response: dict[str, Any]) -> IpAddresses:
+        return IpAddresses(
+            ip_v4_addresses=response.get("ipV4Addresses", None),
+            ip_v6_addresses=response.get("ipV6Addresses", None),
+        )
+
+
+@dataclass
+class WorkerHostProperties:
+    ec2_instance_arn: str | None = None
+    ec2_instance_type: str | None = None
+    host_name: str | None = None
+    ip_addresses: IpAddresses | None = None
+
+    @staticmethod
+    def from_api_response(response: dict[str, Any]) -> WorkerHostProperties:
+        ip_addresses = response.get("ipAddresses", None)
+        return WorkerHostProperties(
+            ec2_instance_arn=response.get("ec2InstanceArn", None),
+            ec2_instance_type=response.get("ec2InstanceType", None),
+            host_name=response.get("hostName", None),
+            ip_addresses=IpAddresses.from_api_response(ip_addresses) if ip_addresses else None,
+        )
+
+
+@dataclass
 class Job:
     id: str
     farm: Farm
@@ -332,7 +392,7 @@ class Job:
     template: dict
 
     name: str
-    lifecycle_status: str
+    lifecycle_status: JobLifecycleStatus
     lifecycle_status_message: str
     priority: int
     created_at: datetime.datetime
@@ -439,7 +499,7 @@ class Job:
         return {
             "id": response["jobId"],
             "name": response["name"],
-            "lifecycle_status": response["lifecycleStatus"],
+            "lifecycle_status": JobLifecycleStatus(response["lifecycleStatus"]),
             "lifecycle_status_message": response["lifecycleStatusMessage"],
             "priority": response["priority"],
             "created_at": response["createdAt"],
@@ -603,6 +663,114 @@ class Job:
             max_retries=max_retries,
         )
 
+    def list_steps(
+        self,
+        *,
+        deadline_client: DeadlineClient,
+    ) -> Generator[Step, None, None]:
+        list_steps_paginator: Paginator = deadline_client.get_paginator("list_steps")
+        list_steps_pages: PageIterator = call_api(
+            description=f"Listing steps for job {self.id}",
+            fn=lambda: list_steps_paginator.paginate(
+                farmId=self.farm.id,
+                queueId=self.queue.id,
+                jobId=self.id,
+            ),
+        )
+
+        for page in list_steps_pages:
+            for step in page["steps"]:
+                dependency_counts = step.get("dependencyCounts", None)
+                yield Step(
+                    farm=self.farm,
+                    queue=self.queue,
+                    job=self,
+                    id=step["stepId"],
+                    name=step["name"],
+                    created_at=step["createdAt"],
+                    created_by=step["createdBy"],
+                    lifecycle_status=StepLifecycleStatus(step["lifecycleStatus"]),
+                    task_run_status=TaskStatus(step["taskRunStatus"]),
+                    task_run_status_counts={
+                        TaskStatus(key): value for key, value in step["taskRunStatusCounts"].items()
+                    },
+                    lifecycle_status_message=step.get("lifeCycleStatusMessage", None),
+                    target_task_run_status=step.get("targetTaskRunStatus", None),
+                    updated_at=step.get("updatedAt", None),
+                    updated_by=step.get("updatedBy", None),
+                    started_at=step.get("startedAt", None),
+                    ended_at=step.get("endedAt", None),
+                    dependency_counts=(
+                        DependencyCounts.from_api_response(dependency_counts)
+                        if dependency_counts is not None
+                        else None
+                    ),
+                )
+
+    def assert_single_task_log_contains(
+        self,
+        *,
+        deadline_client: DeadlineClient,
+        logs_client: BaseClient,
+        expected_pattern: re.Pattern | str,
+        assert_fail_msg: str = "Expected message not found in session log",
+        retries: int = 4,
+        backoff_factor: timedelta = timedelta(milliseconds=300),
+    ) -> None:
+        """
+        Asserts that the expected regular expression pattern exists in the job's session log.
+
+        This method is intended for jobs with a single step and task. It checks the logs of the
+        last run session for the single task.
+
+        The method accounts for the eventual-consistency of CloudWatch log delivery and availability
+        through CloudWatch APIs by retrying a configurable number of times using retries and
+        backs-off exponentially if the pattern is not initially found for a configurable number of
+        times.
+
+        Args:
+            deadline_client (deadline_test_fixtures.client.DeadlineClient): Deadline boto client
+            logs_client (botocore.clients.BaseClient): CloudWatch logs boto client
+            expected_pattern (re.Pattern | str): Either a regular expression pattern string, or a
+                pre-compiled regular expression Pattern object. This is pattern is searched against
+                each of the job's session logs, contatenated as a multi-line string joined by
+                a single newline character (\\n).
+            assert_fail_msg (str): The assertion message to raise if the pattern is not found after
+                the configured exponential backoff attempts. The CloudWatch log group name is
+                appended to the end of this message to assist with diagnosis. The default is
+                "Expected message not found in session log".
+            retries (int): The number of retries with exponential back-off to attempt while the
+                expected pattern is not found. Default is 4.
+            backoff_factor (datetime.timedelta): A multiple used for exponential back-off delay
+                between attempts when the expected pattern is not found. The formula used is:
+
+                delay = backoff_factor * 2 ** i
+
+                where i is the 0-based retry number
+
+                Default is 300ms
+        """
+        # Coerce Regex str patterns to a re.Pattern
+        if isinstance(expected_pattern, str):
+            expected_pattern = re.compile(expected_pattern)
+
+        # Assert there is a single step and task
+        steps = list(self.list_steps(deadline_client=deadline_client))
+        assert len(steps) == 1, "Job contains multiple steps"
+        step = steps[0]
+        tasks = list(step.list_tasks(deadline_client=deadline_client))
+        assert len(tasks) == 1, "Job contains multiple tasks"
+        task = tasks[0]
+
+        session = task.get_last_session(deadline_client=deadline_client)
+        session.assert_log_contains(
+            logs_client=logs_client,
+            expected_pattern=expected_pattern,
+            assert_fail_msg=assert_fail_msg,
+            backoff_factor=backoff_factor,
+            retries=retries,
+        )
+
     @property
     def complete(self) -> bool:  # pragma: no cover
         return self.task_run_status in COMPLETE_TASK_STATUSES
@@ -653,9 +821,386 @@ class Job:
 
 
 @dataclass
+class DependencyCounts:
+    consumers_resolved: int
+    consumers_unresolved: int
+    dependencies_resolved: int
+    dependencies_unresolved: int
+
+    @staticmethod
+    def from_api_response(response: dict[str, Any]) -> DependencyCounts:
+        return DependencyCounts(
+            consumers_resolved=response["consumersResolved"],
+            consumers_unresolved=response["consumersUnresolved"],
+            dependencies_resolved=response["dependenciesResolved"],
+            dependencies_unresolved=response["dependenciesUnresolved"],
+        )
+
+
+@dataclass
+class Step:
+    farm: Farm
+    queue: Queue
+    job: Job
+    id: str
+
+    name: str
+    created_at: datetime.datetime
+    created_by: str
+    lifecycle_status: StepLifecycleStatus
+    task_run_status: TaskStatus
+    task_run_status_counts: dict[TaskStatus, int]
+    lifecycle_status_message: str | None = None
+    target_task_run_status: TaskStatus | None = None
+    updated_at: datetime.datetime | None = None
+    updated_by: str | None = None
+    started_at: datetime.datetime | None = None
+    ended_at: datetime.datetime | None = None
+    dependency_counts: DependencyCounts | None = None
+
+    def list_tasks(
+        self,
+        *,
+        deadline_client: DeadlineClient,
+    ) -> Generator[Task, None, None]:
+        list_tasks_paginator: Paginator = deadline_client.get_paginator("list_tasks")
+        list_tasks_pages: PageIterator = call_api(
+            description=f"Listing steps for job {self.job.id}",
+            fn=lambda: list_tasks_paginator.paginate(
+                farmId=self.farm.id,
+                queueId=self.queue.id,
+                jobId=self.job.id,
+                stepId=self.id,
+            ),
+        )
+        for page in list_tasks_pages:
+            for task in page["tasks"]:
+                target_task_run_status = task.get("targetTaskRunStatus", None)
+                yield Task(
+                    farm=self.farm,
+                    queue=self.queue,
+                    job=self.job,
+                    step=self,
+                    id=task["taskId"],
+                    created_at=task["createdAt"],
+                    created_by=task["createdBy"],
+                    run_status=task["runStatus"],
+                    failure_retry_count=task["failureRetryCount"],
+                    latest_session_action_id=task.get("latestSessionActionId", None),
+                    parameters=task.get("parameters", None),
+                    target_task_run_status=(
+                        TaskStatus(target_task_run_status) if target_task_run_status else None
+                    ),
+                    updated_at=task.get("updatedAt", None),
+                    updated_by=task.get("updatedBy", None),
+                    started_at=task.get("startedAt", None),
+                    ended_at=task.get("endedAt", None),
+                )
+
+
+@dataclass
+class FloatTaskParameterValue:
+    float: str
+
+
+@dataclass
+class IntTaskParameterValue:
+    int: str
+
+
+@dataclass
+class PathTaskParameterValue:
+    path: str
+
+
+@dataclass
+class StringTaskParameterValue:
+    string: str
+
+
+TaskParameterValue = Union[
+    FloatTaskParameterValue, IntTaskParameterValue, PathTaskParameterValue, StringTaskParameterValue
+]
+
+
+@dataclass
+class Task:
+    farm: Farm
+    queue: Queue
+    job: Job
+    step: Step
+    id: str
+
+    created_at: datetime.datetime
+    created_by: str
+    run_status: TaskStatus
+    ended_at: datetime.datetime | None = None
+    failure_retry_count: int | None = None
+    latest_session_action_id: str | None = None
+    parameters: dict[str, TaskParameterValue] | None = None
+    started_at: datetime.datetime | None = None
+    target_task_run_status: TaskStatus | None = None
+    updated_at: datetime.datetime | None = None
+    updated_by: str | None = None
+
+    def get_last_session(
+        self,
+        *,
+        deadline_client: DeadlineClient,
+    ) -> Session:
+        if not self.latest_session_action_id:
+            raise ValueError(f"No latest session action ID for {self.id}")
+        match = re.search(
+            r"^sessionaction-(?P<session_id_hex>[a-f0-9]{32})-\d+$", self.latest_session_action_id
+        )
+        if not match:
+            raise ValueError(
+                f"Latest session action ID for task {self.id} ({self.latest_session_action_id}) does not match the expected pattern."
+            )
+        session_id_hex = match.group("session_id_hex")
+        session_id = f"session-{session_id_hex}"
+        session = deadline_client.get_session(
+            farmId=self.farm.id,
+            queueId=self.queue.id,
+            jobId=self.job.id,
+            sessionId=session_id,
+        )
+        host_properties = session.get("hostProperties", None)
+        return Session(
+            farm=self.farm,
+            queue=self.queue,
+            job=self.job,
+            fleet=Fleet(session["fleetId"], farm=self.farm),
+            id=session["sessionId"],
+            lifecycle_status=session["lifecycleStatus"],
+            worker_log=LogConfiguration.from_api_response(session["workerLog"]),
+            host_properties=(
+                WorkerHostProperties.from_api_response(host_properties) if host_properties else None
+            ),
+            logs=LogConfiguration.from_api_response(session["log"]),
+            started_at=session.get("startedAt", None),
+            ended_at=session.get("endedAt", None),
+            target_lifecycle_status=session.get("targetLifecycleStatus", None),
+            updated_at=session.get("updatedAt", None),
+            updated_by=session.get("updatedBy", None),
+            worker_id=session["workerId"],
+        )
+
+    def list_sessions(self, *, deadline_client: DeadlineClient) -> Generator[Session, None, None]:
+        list_sessions_paginator: Paginator = deadline_client.get_paginator("list_sessions")
+        list_sessions_pages: PageIterator = call_api(
+            description=f"Listing steps for job {self.job.id}",
+            fn=lambda: list_sessions_paginator.paginate(
+                farmId=self.farm.id,
+                queueId=self.queue.id,
+                jobId=self.id,
+            ),
+        )
+        for page in list_sessions_pages:
+            for session in page["sessions"]:
+                host_properties = session.get("hostProperties", None)
+                worker_log_config = session.get("workerLog", None)
+                yield Session(
+                    farm=self.farm,
+                    queue=self.queue,
+                    job=self.job,
+                    fleet=Fleet(session["fleetId"], farm=self.farm),
+                    id=session["sessionId"],
+                    lifecycle_status=session["lifecycleStatus"],
+                    host_properties=(
+                        WorkerHostProperties.from_api_response(host_properties)
+                        if host_properties
+                        else None
+                    ),
+                    logs=LogConfiguration.from_api_response(session["log"]),
+                    started_at=session.get("startedAt", None),
+                    ended_at=session.get("endedAt", None),
+                    target_lifecycle_status=session.get("targetLifecycleStatus", None),
+                    updated_at=session.get("updatedAt", None),
+                    updated_by=session.get("updatedBy", None),
+                    worker_id=session["workerId"],
+                    worker_log=(
+                        LogConfiguration.from_api_response(worker_log_config)
+                        if worker_log_config
+                        else None
+                    ),
+                )
+
+
+@dataclass
 class JobLogs:
     log_group_name: str
     logs: dict[str, list[CloudWatchLogEvent]]
+
+    @property
+    def session_logs(self) -> dict[str, SessionLog]:
+        return {
+            session_id: SessionLog(session_id=session_id, logs=logs)
+            for session_id, logs in self.logs.items()
+        }
+
+
+@dataclass
+class LogConfiguration:
+    log_driver: Literal["awslogs"]
+    error: str | None = None
+    options: dict[str, str] | None = None
+    parameters: dict[str, str] | None = None
+
+    @staticmethod
+    def from_api_response(response: dict[str, Any]) -> LogConfiguration:
+        return LogConfiguration(
+            log_driver=response["logDriver"],
+            error=response.get("error", None),
+            options=response.get("options", None),
+            parameters=response.get("parameters", None),
+        )
+
+
+@dataclass
+class Session:
+    farm: Farm
+    queue: Queue
+    job: Job
+    fleet: Fleet
+    id: str
+
+    lifecycle_status: SessionLifecycleStatus
+    logs: LogConfiguration
+    started_at: datetime.datetime
+    worker_id: str
+    ended_at: datetime.datetime | None = None
+    host_properties: WorkerHostProperties | None = None
+    target_lifecycle_status: Literal["ENDED"] | None = None
+    updated_at: datetime.datetime | None = None
+    updated_by: str | None = None
+    worker_log: LogConfiguration | None = None
+
+    def get_session_log(self, *, logs_client: BaseClient) -> SessionLog:
+        if not (log_driver := self.logs.log_driver):
+            raise ValueError('No "logDriver" key in session API response')
+        elif log_driver != "awslogs":
+            raise NotImplementedError(f'Unsupported log driver "{log_driver}"')
+        if not (session_log_config_options := self.logs.options):
+            raise ValueError('No "options" key in session "log" API response')
+        if not (log_group_name := session_log_config_options.get("logGroupName", None)):
+            raise ValueError('No "logGroupName" key in session "log" -> "options" API response')
+        if not (log_stream_name := session_log_config_options.get("logStreamName", None)):
+            raise ValueError('No "logStreamName" key in session "log" -> "options" API response')
+
+        filter_log_events_paginator: Paginator = logs_client.get_paginator("filter_log_events")
+        filter_log_events_pages: PageIterator = call_api(
+            description=f"Fetching log events for session {self.id} in log group {log_group_name}",
+            fn=lambda: filter_log_events_paginator.paginate(
+                logGroupName=log_group_name,
+                logStreamNames=[log_stream_name],
+            ),
+        )
+        log_events = filter_log_events_pages.build_full_result()
+        log_events = [CloudWatchLogEvent.from_api_response(e) for e in log_events["events"]]
+
+        return SessionLog(session_id=self.id, logs=log_events)
+
+    def assert_log_contains(
+        self,
+        *,
+        logs_client: BaseClient,
+        expected_pattern: re.Pattern | str,
+        assert_fail_msg: str = "Expected message not found in session log",
+        retries: int = 4,
+        backoff_factor: timedelta = timedelta(milliseconds=300),
+    ) -> None:
+        """
+        Asserts that the expected regular expression pattern exists in the job's session log.
+
+        This method accounts for the eventual-consistency of CloudWatch log delivery and
+        availability through CloudWatch APIs by retrying a configurable number of times using
+        exponential back-off if the pattern is not initially found.
+
+        Args:
+            logs_client (botocore.clients.BaseClient): CloudWatch logs boto client
+            expected_pattern (re.Pattern | str): Either a regular expression pattern string, or a
+                pre-compiled regular expression Pattern object. This is pattern is searched against
+                each of the job's session logs, contatenated as a multi-line string joined by
+                a single newline character (\\n).
+            assert_fail_msg (str): The assertion message to raise if the pattern is not found after
+                the configured exponential backoff attempts. The CloudWatch log group name is
+                appended to the end of this message to assist with diagnosis. The default is
+                "Expected message not found in session log".
+            retries (int): The number of retries with exponential back-off to attempt while the
+                expected pattern is not found. Default is 4.
+            backoff_factor (datetime.timedelta): A multiple used for exponential back-off delay
+                between attempts when the expected pattern is not found. The formula used is:
+
+                delay = backoff_factor * 2 ** i
+
+                where i is the 0-based retry number
+
+                Default is 300ms
+        """
+        # Coerce Regex str patterns to a re.Pattern
+        if isinstance(expected_pattern, str):
+            expected_pattern = re.compile(expected_pattern)
+
+        if not (session_log_config_options := self.logs.options):
+            raise ValueError('No "options" key in session "log" API response')
+        if not (log_group_name := session_log_config_options.get("logGroupName", None)):
+            raise ValueError('No "logGroupName" key in session "log" -> "options" API response')
+
+        for i in range(retries + 1):
+            session_log = self.get_session_log(logs_client=logs_client)
+
+            try:
+                session_log.assert_pattern_in_log(
+                    expected_pattern=expected_pattern,
+                    failure_msg=f"{assert_fail_msg}. Logs are in CloudWatch log group: {log_group_name}",
+                )
+            except AssertionError:
+                if i == retries:
+                    raise
+                else:
+                    delay: timedelta = (2**i) * backoff_factor
+                    LOG.warning(
+                        f"Expected pattern not found in session log {self.id}, delaying {delay} then retry."
+                    )
+                    time.sleep(delay.total_seconds())
+            else:
+                return
+
+
+@dataclass
+class SessionLog:
+    session_id: str
+    logs: list[CloudWatchLogEvent]
+
+    def assert_pattern_in_log(
+        self,
+        *,
+        expected_pattern: re.Pattern | str,
+        failure_msg: str,
+    ) -> None:
+        """
+        Asserts that a pattern is found in the session log
+
+        Args:
+            expected_pattern (re.Pattern | str): Either a regular expression pattern string, or a
+                pre-compiled regular expression Pattern object. This is pattern is searched against
+                each of the job's session logs, contatenated as a multi-line string joined by
+                a single newline character (\\n).
+            failure_msg (str): A message to be raised in an AssertionError if the expected pattern
+                is not found
+
+        Raises:
+            AssertionError
+                Raised when the expected pattern is not found in the session log. The argument to
+                the AssertionError is the value of the failure_msg argument
+        """
+        # Coerce Regex str patterns to a re.Pattern
+        if isinstance(expected_pattern, str):
+            expected_pattern = re.compile(expected_pattern)
+
+        full_session_log = "\n".join(le.message for le in self.logs)
+        assert expected_pattern.search(full_session_log), failure_msg
 
 
 @dataclass
