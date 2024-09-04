@@ -1,3 +1,10 @@
+## 0.13.2 (2024-09-04)
+
+
+
+### Bug Fixes
+* silent progress ui (#148) ([`5df19d7`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/5df19d70754e768db9189a29612803d3acf30015))
+
 ## 0.13.1 (2024-08-26)
 
 
