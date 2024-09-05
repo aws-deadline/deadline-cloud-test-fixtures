@@ -1,3 +1,14 @@
+## 0.14.0 (2024-09-05)
+
+### BREAKING CHANGES
+* `Job.lifecycle_status` changed from `str` &rarr; `deadline_cloud_test_fixtures.deadline.JobLifecycleStatus`
+* `deadline_cloud_test_fixtures.TaskStatus.UNKNOWN` removed
+
+### Features
+* job/step/task API functions and session log assertions (#150) ([`18f7078`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/18f7078441e7d3fe02efb51f1175aa1595ab2df3))
+
+
+
 ## 0.13.2 (2024-09-04)
 
 
