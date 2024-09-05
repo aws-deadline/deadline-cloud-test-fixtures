@@ -1,7 +1,10 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+from __future__ import annotations
+
 import datetime
 import json
+import re
 from dataclasses import asdict, replace
 from typing import Any, Generator, cast
 from unittest.mock import MagicMock, call, patch
@@ -16,6 +19,9 @@ from deadline_test_fixtures import (
     QueueFleetAssociation,
     Job,
     JobAttachmentSettings,
+    Session,
+    Step,
+    Task,
     TaskStatus,
 )
 from deadline_test_fixtures.deadline import resources as mod
@@ -48,16 +54,307 @@ def queue(farm: Farm) -> Queue:
 
 
 @pytest.fixture
-def fleet(farm: Farm) -> Fleet:
-    return Fleet(id="fleet-123", farm=farm)
+def fleet_id() -> str:
+    return "fleet-123"
 
 
 @pytest.fixture
-def qfa(farm: Farm, queue: Queue, fleet: Fleet) -> QueueFleetAssociation:
+def fleet(
+    farm: Farm,
+    fleet_id: str,
+) -> Fleet:
+    return Fleet(id=fleet_id, farm=farm)
+
+
+@pytest.fixture
+def qfa(
+    farm: Farm,
+    queue: Queue,
+    fleet: Fleet,
+) -> QueueFleetAssociation:
     return QueueFleetAssociation(
         farm=farm,
         queue=queue,
         fleet=fleet,
+    )
+
+
+@pytest.fixture
+def job_id() -> str:
+    return "job-123"
+
+
+@pytest.fixture
+def job(
+    farm: Farm,
+    queue: Queue,
+    job_id: str,
+) -> Job:
+    return Job(
+        id=job_id,
+        farm=farm,
+        queue=queue,
+        template={},
+        name="Job Name",
+        lifecycle_status=mod.JobLifecycleStatus.CREATE_COMPLETE,
+        lifecycle_status_message="Nice",
+        priority=1,
+        created_at=datetime.datetime.now(),
+        created_by="test-user",
+    )
+
+
+@pytest.fixture
+def step_id() -> str:
+    return "step-123"
+
+
+@pytest.fixture
+def step(
+    farm: Farm,
+    queue: Queue,
+    job: Job,
+    step_id: str,
+) -> Step:
+    return Step(
+        id=step_id,
+        farm=farm,
+        queue=queue,
+        job=job,
+        name="Step Name",
+        created_at=datetime.datetime.now(),
+        created_by="test-user",
+        lifecycle_status=mod.StepLifecycleStatus.CREATE_COMPLETE,
+        task_run_status=TaskStatus.SUCCEEDED,
+        task_run_status_counts={
+            TaskStatus.ASSIGNED: 0,
+            TaskStatus.CANCELED: 0,
+            TaskStatus.FAILED: 0,
+            TaskStatus.INTERRUPTING: 0,
+            TaskStatus.NOT_COMPATIBLE: 0,
+            TaskStatus.PENDING: 0,
+            TaskStatus.READY: 0,
+            TaskStatus.RUNNING: 0,
+            TaskStatus.SCHEDULED: 0,
+            TaskStatus.STARTING: 0,
+            TaskStatus.SUCCEEDED: 0,
+            TaskStatus.SUSPENDED: 0,
+        },
+    )
+
+
+@pytest.fixture
+def session_id_hex() -> str:
+    return "00001111222233334444555566667777"
+
+
+@pytest.fixture
+def session_id(session_id_hex: str) -> str:
+    return f"session-{session_id_hex}"
+
+
+@pytest.fixture
+def session_action_id(session_id_hex: str) -> str:
+    return f"sessionaction-{session_id_hex}-0"
+
+
+@pytest.fixture
+def task_id() -> str:
+    return "task-a12"
+
+
+@pytest.fixture
+def task_created_at() -> datetime.datetime:
+    return datetime.datetime.now()
+
+
+@pytest.fixture
+def task_created_by() -> str:
+    return "taskcreator"
+
+
+@pytest.fixture
+def task_run_status() -> TaskStatus:
+    return TaskStatus.SUCCEEDED
+
+
+@pytest.fixture
+def task(
+    farm: Farm,
+    queue: Queue,
+    job: Job,
+    step: Step,
+    session_action_id: str,
+    task_id: str,
+    task_created_at: datetime.datetime,
+    task_created_by: str,
+    task_run_status: TaskStatus,
+) -> Task:
+    return Task(
+        farm=farm,
+        queue=queue,
+        job=job,
+        step=step,
+        id=task_id,
+        created_at=task_created_at,
+        created_by=task_created_by,
+        run_status=task_run_status,
+        latest_session_action_id=session_action_id,
+    )
+
+
+@pytest.fixture
+def session_log_driver() -> str:
+    return "awslogs"
+
+
+@pytest.fixture
+def session_log_group_name() -> str:
+    return "sessionLogGroup"
+
+
+@pytest.fixture
+def session_log_stream_name() -> str:
+    return "sessionLogStream"
+
+
+@pytest.fixture
+def session_log_config(
+    session_log_driver: str,
+    session_log_group_name: str,
+    session_log_stream_name: str,
+) -> mod.LogConfiguration:
+    return mod.LogConfiguration(
+        log_driver=session_log_driver,  # type: ignore[arg-type]
+        options={
+            "logGroupName": session_log_group_name,
+            "logStreamName": session_log_stream_name,
+        },
+        parameters={},
+    )
+
+
+@pytest.fixture
+def worker_log_driver() -> str:
+    return "awslogs"
+
+
+@pytest.fixture
+def worker_log_group_name() -> str:
+    return "workerLogGroup"
+
+
+@pytest.fixture
+def worker_log_stream_name() -> str:
+    return "workerLogStream"
+
+
+@pytest.fixture
+def worker_log_config(
+    worker_log_driver: str,
+    worker_log_group_name: str,
+    worker_log_stream_name: str,
+) -> mod.LogConfiguration:
+    return mod.LogConfiguration(
+        log_driver=worker_log_driver,  # type: ignore[arg-type]
+        options={
+            "logGroupName": worker_log_group_name,
+            "logStreamName": worker_log_stream_name,
+        },
+        parameters={},
+    )
+
+
+@pytest.fixture
+def worker_id() -> str:
+    return "worker-abc"
+
+
+@pytest.fixture
+def session_started_at() -> datetime.datetime:
+    return datetime.datetime.now()
+
+
+@pytest.fixture
+def session_lifecycle_status() -> mod.SessionLifecycleStatus:
+    return mod.SessionLifecycleStatus.ENDED
+
+
+@pytest.fixture
+def ip_v4_addresses() -> list[str]:
+    return ["192.168.0.100"]
+
+
+@pytest.fixture
+def ip_v6_addresses() -> list[str]:
+    return ["::1"]
+
+
+@pytest.fixture
+def ip_addresses(
+    ip_v4_addresses: list[str],
+    ip_v6_addresses: list[str],
+) -> mod.IpAddresses:
+    return mod.IpAddresses(
+        ip_v4_addresses=ip_v4_addresses,
+        ip_v6_addresses=ip_v6_addresses,
+    )
+
+
+@pytest.fixture
+def ec2_instance_arn() -> str:
+    return "ec2_instance_arn"
+
+
+@pytest.fixture
+def ec2_instance_type() -> str:
+    return "t3.micro"
+
+
+@pytest.fixture
+def host_name() -> str:
+    return "hostname"
+
+
+@pytest.fixture
+def worker_host_properties(
+    ec2_instance_arn: str,
+    ec2_instance_type: str,
+    host_name: str,
+    ip_addresses: mod.IpAddresses,
+) -> mod.WorkerHostProperties:
+    return mod.WorkerHostProperties(
+        ec2_instance_arn=ec2_instance_arn,
+        ec2_instance_type=ec2_instance_type,
+        ip_addresses=ip_addresses,
+        host_name=host_name,
+    )
+
+
+@pytest.fixture
+def session(
+    farm: Farm,
+    queue: Queue,
+    job: Job,
+    fleet: Fleet,
+    session_id: str,
+    session_lifecycle_status: mod.SessionLifecycleStatus,
+    session_log_config: mod.LogConfiguration,
+    session_started_at: datetime.datetime,
+    worker_id: str,
+    worker_log_config: mod.LogConfiguration,
+) -> Session:
+    return Session(
+        farm=farm,
+        queue=queue,
+        fleet=fleet,
+        job=job,
+        id=session_id,
+        lifecycle_status=session_lifecycle_status,
+        logs=session_log_config,
+        started_at=session_started_at,
+        worker_id=worker_id,
+        worker_log=worker_log_config,
     )
 
 
@@ -354,21 +651,6 @@ class TestJob:
             "SUCCEEDED": succeeded,
         }
 
-    @pytest.fixture
-    def job(self, farm: Farm, queue: Queue) -> Job:
-        return Job(
-            id="job-123",
-            farm=farm,
-            queue=queue,
-            template={},
-            name="Job Name",
-            lifecycle_status="CREATE_COMPLETE",
-            lifecycle_status_message="Nice",
-            priority=1,
-            created_at=datetime.datetime.now(),
-            created_by="test-user",
-        )
-
     def test_submit(
         self,
         farm: Farm,
@@ -468,7 +750,7 @@ class TestJob:
         assert job.queue is queue
         assert job.template == template
         assert job.name == "Test Job"
-        assert job.lifecycle_status == "CREATE_COMPLETE"
+        assert job.lifecycle_status == mod.JobLifecycleStatus.CREATE_COMPLETE
         assert job.lifecycle_status_message == "Nice"
         assert job.priority == priority
         assert job.created_at == created_at
@@ -570,7 +852,7 @@ class TestJob:
         get_job_response = {
             "jobId": job.id,
             "name": job.name,
-            "lifecycleStatus": job.lifecycle_status,
+            "lifecycleStatus": job.lifecycle_status.value,
             "lifecycleStatusMessage": job.lifecycle_status_message,
             "createdAt": job.created_at,
             "createdBy": job.created_by,
@@ -742,3 +1024,600 @@ class TestJob:
         assert session_log_map["session-2"] == [
             CloudWatchLogEvent.from_api_response(le) for le in log_events[1]["events"]
         ]
+
+    def test_assert_single_task_log_contains_success(self, job: Job, session: Session) -> None:
+        # GIVEN
+        deadline_client = MagicMock()
+        logs_client = MagicMock()
+        step = MagicMock()
+        task = MagicMock()
+        step.list_tasks.return_value = [task]
+        task.get_last_session.return_value = session
+        expected_pattern = re.compile(r"a message")
+
+        with (
+            patch.object(job, "list_steps", return_value=[step]) as mock_list_steps,
+            patch.object(session, "assert_log_contains") as mock_session_assert_log_contains,
+        ):
+
+            # WHEN
+            job.assert_single_task_log_contains(
+                deadline_client=deadline_client,
+                logs_client=logs_client,
+                expected_pattern=expected_pattern,
+            )
+
+        # THEN
+        # This test is only to confirm that no assertion is raised, since the expected message
+        # is in the logs
+        mock_session_assert_log_contains.assert_called_once_with(
+            logs_client=logs_client,
+            expected_pattern=expected_pattern,
+            assert_fail_msg="Expected message not found in session log",
+            backoff_factor=datetime.timedelta(milliseconds=300),
+            retries=4,
+        )
+        mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
+        step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
+        task.get_last_session.assert_called_once_with(deadline_client=deadline_client)
+
+    def test_assert_single_task_log_contains_multi_step(self, job: Job) -> None:
+        # GIVEN
+        deadline_client = MagicMock()
+        logs_client = MagicMock()
+        step = MagicMock()
+        expected_pattern = re.compile(r"a message")
+
+        with (patch.object(job, "list_steps", return_value=[step, step]) as mock_list_steps,):
+
+            # WHEN
+            def when():
+                job.assert_single_task_log_contains(
+                    deadline_client=deadline_client,
+                    logs_client=logs_client,
+                    expected_pattern=expected_pattern,
+                )
+
+            # THEN
+            with pytest.raises(AssertionError) as raise_ctx:
+                when()
+
+        print(raise_ctx.value)
+
+        assert raise_ctx.match("Job contains multiple steps")
+        mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
+        step.list_tasks.assert_not_called()
+
+    def test_assert_single_task_log_contains_multi_task(self, job: Job, session: Session) -> None:
+        # GIVEN
+        deadline_client = MagicMock()
+        logs_client = MagicMock()
+        step = MagicMock()
+        task = MagicMock()
+        step.list_tasks.return_value = [task, task]
+        task.get_last_session.return_value = session
+        expected_pattern = re.compile(r"a message")
+
+        with (patch.object(job, "list_steps", return_value=[step]) as mock_list_steps,):
+
+            # WHEN
+            def when():
+                job.assert_single_task_log_contains(
+                    deadline_client=deadline_client,
+                    logs_client=logs_client,
+                    expected_pattern=expected_pattern,
+                )
+
+            # THEN
+            with pytest.raises(AssertionError) as raise_ctx:
+                when()
+
+        print(raise_ctx.value)
+
+        assert raise_ctx.match("Job contains multiple tasks")
+        mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
+        step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
+        task.get_last_session.assert_not_called()
+
+    def test_list_steps(
+        self,
+        job: Job,
+    ) -> None:
+        # GIVEN
+        step_id = "step-97f70ac0e02d4dc0acb589b9bd890981"
+        step_name = "a step"
+        created_at = datetime.datetime(2024, 9, 3)
+        created_by = "username"
+        lifecycle_status = "CREATE_COMPLETE"
+        task_run_status = "ASSIGNED"
+        lifecycle_status_message = ("a message",)
+        target_task_run_status = ("READY",)
+        updated_at = datetime.datetime(2024, 9, 3)
+        updated_by = "someone"
+        started_at = datetime.datetime(2024, 9, 3)
+        ended_at = datetime.datetime(2024, 9, 3)
+        task_run_status_counts = {
+            "PENDING": 0,
+            "READY": 0,
+            "ASSIGNED": 0,
+            "STARTING": 0,
+            "SCHEDULED": 0,
+            "INTERRUPTING": 0,
+            "RUNNING": 0,
+            "SUSPENDED": 0,
+            "CANCELED": 0,
+            "FAILED": 0,
+            "SUCCEEDED": 0,
+            "NOT_COMPATIBLE": 0,
+        }
+        dependency_counts = {
+            "consumersResolved": 0,
+            "consumersUnresolved": 0,
+            "dependenciesResolved": 0,
+            "dependenciesUnresolved": 0,
+        }
+
+        deadline_client = MagicMock()
+        deadline_client.get_paginator.return_value.paginate.return_value = [
+            {
+                "steps": [
+                    {
+                        "stepId": step_id,
+                        "name": step_name,
+                        "createdAt": created_at,
+                        "createdBy": created_by,
+                        "lifecycleStatus": lifecycle_status,
+                        "taskRunStatus": task_run_status,
+                        "taskRunStatusCounts": task_run_status_counts,
+                        "lifeCycleStatusMessage": lifecycle_status_message,
+                        "targetTaskRunStatus": target_task_run_status,
+                        "updatedAt": updated_at,
+                        "updatedBy": updated_by,
+                        "startedAt": started_at,
+                        "endedAt": ended_at,
+                        "dependencyCounts": dependency_counts,
+                    },
+                ],
+            }
+        ]
+        result = job.list_steps(deadline_client=deadline_client)
+
+        # WHEN
+        result_list = list(result)
+
+        # THEN
+        assert len(result_list) == 1
+        step = result_list[0]
+        assert step.id == step_id
+        assert step.name == step_name
+        assert step.created_at == created_at
+        assert step.created_by == created_by
+        assert step.lifecycle_status == mod.StepLifecycleStatus(lifecycle_status)
+        assert step.task_run_status == task_run_status
+        assert step.lifecycle_status_message == lifecycle_status_message
+        assert step.target_task_run_status == target_task_run_status
+        assert step.updated_at == updated_at
+        assert step.updated_by == updated_by
+        assert step.started_at == started_at
+        assert step.ended_at == ended_at
+
+        for status in step.task_run_status_counts:
+            assert step.task_run_status_counts[status] == task_run_status_counts[status.value]
+
+        assert step.dependency_counts is not None
+        assert step.dependency_counts.consumers_resolved == dependency_counts["consumersResolved"]
+        assert (
+            step.dependency_counts.consumers_unresolved == dependency_counts["consumersUnresolved"]
+        )
+        assert (
+            step.dependency_counts.dependencies_resolved
+            == dependency_counts["dependenciesResolved"]
+        )
+        assert (
+            step.dependency_counts.dependencies_unresolved
+            == dependency_counts["dependenciesUnresolved"]
+        )
+
+
+class TestStep:
+    def test_list_tasks(
+        self,
+        step: Step,
+        session_action_id: str,
+    ) -> None:
+        # GIVEN
+        deadline_client = MagicMock()
+        mock_get_paginator: MagicMock = deadline_client.get_paginator
+        mock_paginate: MagicMock = mock_get_paginator.return_value.paginate
+        task_id = "task-b73de3af607f472687cafb16def7664e"
+        created_at = datetime.datetime.now()
+        created_by = "someone"
+        run_status = "READY"
+        failure_retry_count = 5
+        target_task_run_status = "RUNNING"
+        updated_at = datetime.datetime.now()
+        updated_by = "someoneelse"
+        started_at = datetime.datetime.now()
+        ended_at = datetime.datetime.now()
+        mock_paginate.return_value = [
+            {
+                "tasks": [
+                    {
+                        "taskId": task_id,
+                        "createdAt": created_at,
+                        "createdBy": created_by,
+                        "runStatus": run_status,
+                        "failureRetryCount": failure_retry_count,
+                        "latestSessionActionId": session_action_id,
+                        "parameters": {},
+                        "targetTaskRunStatus": target_task_run_status,
+                        "updatedAt": updated_at,
+                        "updatedBy": updated_by,
+                        "startedAt": started_at,
+                        "endedAt": ended_at,
+                    },
+                ],
+            },
+        ]
+        generator = step.list_tasks(deadline_client=deadline_client)
+
+        # WHEN
+        result = list(generator)
+
+        # THEN
+        assert len(result) == 1
+        task = result[0]
+        assert task.id == task_id
+        assert task.created_at == created_at
+        assert task.created_by == created_by
+        assert task.run_status == TaskStatus(run_status)
+        assert task.failure_retry_count == failure_retry_count
+        assert task.latest_session_action_id == session_action_id
+        assert task.parameters == {}
+        assert task.target_task_run_status == TaskStatus(target_task_run_status)
+        assert task.updated_at == updated_at
+        assert task.updated_by == updated_by
+        assert task.started_at == started_at
+        assert task.ended_at == ended_at
+        mock_get_paginator.assert_called_once_with("list_tasks")
+        mock_paginate.assert_called_once_with(
+            farmId=step.farm.id,
+            queueId=step.queue.id,
+            jobId=step.job.id,
+            stepId=step.id,
+        )
+
+
+class TestTask:
+    def test_get_last_session(
+        self,
+        fleet_id: str,
+        task: Task,
+        session_id: str,
+        session_lifecycle_status: mod.SessionLifecycleStatus,
+        session_log_config: mod.LogConfiguration,
+        worker_id: str,
+        worker_log_config: mod.LogConfiguration,
+        ec2_instance_arn: str,
+        ec2_instance_type: str,
+        host_name: str,
+        ip_v4_addresses: list[str],
+        ip_v6_addresses: list[str],
+    ) -> None:
+        # GIVEN
+        deadline_client = MagicMock()
+        mock_get_session: MagicMock = deadline_client.get_session
+        started_at = datetime.datetime.now()
+        ended_at = datetime.datetime.now()
+        updated_at = datetime.datetime.now()
+        updated_by = "taskupdater"
+        mock_get_session.return_value = {
+            "sessionId": session_id,
+            "fleetId": fleet_id,
+            "lifecycleStatus": session_lifecycle_status.value,
+            "log": {
+                "logDriver": session_log_config.log_driver,
+                "options": session_log_config.options,
+                "parameters": session_log_config.parameters,
+            },
+            "hostProperties": {
+                "ec2InstanceArn": ec2_instance_arn,
+                "ec2InstanceType": ec2_instance_type,
+                "hostName": host_name,
+                "ipAddresses": {
+                    "ipV4Addresses": ip_v4_addresses,
+                    "ipV6Addresses": ip_v6_addresses,
+                },
+            },
+            "startedAt": started_at,
+            "endedAt": ended_at,
+            "updatedAt": updated_at,
+            "updatedBy": updated_by,
+            "workerId": worker_id,
+            "workerLog": {
+                "logDriver": worker_log_config.log_driver,
+                "options": worker_log_config.options,
+                "parameters": worker_log_config.parameters,
+            },
+        }
+
+        # WHEN
+        returned_session = task.get_last_session(deadline_client=deadline_client)
+
+        # THEN
+        assert isinstance(returned_session, Session)
+        assert returned_session.id == session_id
+        assert returned_session.fleet.id == fleet_id
+        assert returned_session.worker_id == worker_id
+        assert returned_session.lifecycle_status == session_lifecycle_status
+        assert returned_session.started_at == started_at
+        assert returned_session.ended_at == ended_at
+        assert returned_session.updated_at == updated_at
+        assert returned_session.updated_by == updated_by
+
+        assert isinstance(returned_session.host_properties, mod.WorkerHostProperties)
+        assert returned_session.host_properties.ec2_instance_arn == ec2_instance_arn
+        assert returned_session.host_properties.ec2_instance_type == ec2_instance_type
+        assert returned_session.host_properties.host_name == host_name
+
+        assert isinstance(returned_session.host_properties.ip_addresses, mod.IpAddresses)
+        assert returned_session.host_properties.ip_addresses.ip_v4_addresses == ip_v4_addresses
+        assert returned_session.host_properties.ip_addresses.ip_v6_addresses == ip_v6_addresses
+
+        assert isinstance(returned_session.logs, mod.LogConfiguration)
+        assert returned_session.logs.log_driver == session_log_config.log_driver
+        assert returned_session.logs.options == session_log_config.options
+        assert returned_session.logs.parameters == session_log_config.parameters
+
+        assert isinstance(returned_session.worker_log, mod.LogConfiguration)
+        assert returned_session.worker_log.log_driver == worker_log_config.log_driver
+        assert returned_session.worker_log.options == worker_log_config.options
+        assert returned_session.worker_log.parameters == worker_log_config.parameters
+
+
+class TestSession:
+    @pytest.mark.parametrize(
+        argnames=("expected_pattern", "log_messages"),
+        argvalues=(
+            pytest.param("PATTERN", ["PATTERN"], id="exact-match"),
+            pytest.param("PATTERN", ["PATTERN at beginning"], id="match-beginning"),
+            pytest.param("PATTERN", ["ends with PATTERN"], id="match-end"),
+            pytest.param("PATTERN", ["multiline with", "the PATTERN"], id="match-end"),
+            pytest.param(
+                re.compile(r"This is\na multiline pattern", re.MULTILINE),
+                ["extra lines", "This is", "a multiline pattern", "embedded"],
+                id="multi-line-pattern",
+            ),
+            pytest.param(
+                re.compile(r"^anchored\nmultiline pattern", re.MULTILINE),
+                ["extra lines", "anchored", "multiline pattern", "trailing line"],
+                id="anchored-multi-line-pattern",
+            ),
+        ),
+    )
+    def test_assert_logs_success(
+        self,
+        session: Session,
+        expected_pattern: str | re.Pattern,
+        log_messages: list[str],
+    ) -> None:
+        # GIVEN
+        logs_client = MagicMock()
+        logs = mod.SessionLog(
+            session_id=session.id,
+            logs=[
+                mod.CloudWatchLogEvent(
+                    ingestion_time=i,
+                    message=message,
+                    timestamp=i,
+                )
+                for i, message in enumerate(log_messages)
+            ],
+        )
+
+        with (
+            patch.object(session, "get_session_log", return_value=logs) as mock_get_session_log,
+            # Speed up tests
+            patch.object(mod.time, "sleep") as mock_time_sleep,
+        ):
+
+            # WHEN
+            session.assert_log_contains(
+                logs_client=logs_client,
+                expected_pattern=expected_pattern,
+            )
+
+        # THEN
+        # (no exception is raised)
+        mock_get_session_log.assert_called_once_with(logs_client=logs_client)
+        mock_time_sleep.assert_not_called()
+
+    @pytest.mark.parametrize(
+        argnames="assert_fail_msg",
+        argvalues=(
+            pytest.param(None, id="default"),
+            pytest.param("message to raise", id="provided-assert-msg"),
+        ),
+    )
+    @pytest.mark.parametrize(
+        argnames="retries",
+        argvalues=(pytest.param(None, id="retries[default]"), pytest.param(3, id="rerties[3]")),
+    )
+    @pytest.mark.parametrize(
+        argnames="backoff_factor",
+        argvalues=(
+            pytest.param(None, id="backoff_factor[default]"),
+            pytest.param(datetime.timedelta(seconds=10), id="backoff_factor[10s]"),
+        ),
+    )
+    def test_assert_logs_contains_fail(
+        self,
+        session: Session,
+        assert_fail_msg: str | None,
+        retries: int | None,
+        backoff_factor: datetime.timedelta | None,
+        session_log_group_name: str,
+    ) -> None:
+        # GIVEN
+        logs_client = MagicMock()
+        session_id = "session-5815c7b8054c4548837c2538f0139661"
+        logs = mod.SessionLog(
+            session_id=session_id,
+            logs=[
+                mod.CloudWatchLogEvent(
+                    ingestion_time=i,
+                    message=message,
+                    timestamp=i,
+                )
+                for i, message in enumerate(
+                    [
+                        "this is not the expected message",
+                    ]
+                )
+            ],
+        )
+        expected_assertion_msg = (
+            f"{assert_fail_msg or 'Expected message not found in session log'}."
+            f" Logs are in CloudWatch log group: {session_log_group_name}"
+        )
+        expected_retries = retries if retries is not None else 4
+        expected_backoff_factor = (
+            backoff_factor if backoff_factor is not None else datetime.timedelta(milliseconds=300)
+        )
+
+        with (
+            patch.object(session, "get_session_log", return_value=logs) as mock_get_session_log,
+            # Speed up tests
+            patch.object(mod.time, "sleep") as mock_time_sleep,
+        ):
+            # WHEN
+            def when():
+                kwargs: dict[str, Any] = {
+                    "logs_client": logs_client,
+                    "expected_pattern": re.compile("a message"),
+                }
+                if assert_fail_msg is not None:
+                    kwargs["assert_fail_msg"] = assert_fail_msg
+                if retries is not None:
+                    kwargs["retries"] = retries
+                if backoff_factor is not None:
+                    kwargs["backoff_factor"] = backoff_factor
+                session.assert_log_contains(**kwargs)
+
+            # THEN
+            with pytest.raises(AssertionError) as raise_ctx:
+                when()
+
+        assert raise_ctx.value.args[0] == expected_assertion_msg
+        mock_get_session_log.assert_has_calls(
+            [call(logs_client=logs_client)] * (expected_retries + 1)
+        )
+        assert mock_get_session_log.call_count == (expected_retries + 1)
+        mock_time_sleep.assert_has_calls(
+            [
+                call((expected_backoff_factor * (2**i)).total_seconds())
+                for i in range(expected_retries)
+            ]
+        )
+        assert mock_time_sleep.call_count == expected_retries
+
+    @pytest.mark.parametrize(
+        argnames="retries_before_success",
+        argvalues=(1, 2),
+    )
+    def test_assert_logs_contain_cw_eventual_consistency(
+        self,
+        session: Session,
+        retries_before_success: int,
+    ) -> None:
+        # GIVEN
+        logs_client = MagicMock()
+        session_id = "session-5815c7b8054c4548837c2538f0139661"
+        message_only_in_complete_logs = "message only in complete logs"
+        partial_log = mod.SessionLog(
+            session_id=session_id,
+            logs=[
+                mod.CloudWatchLogEvent(
+                    ingestion_time=0,
+                    message="this contains partial logs",
+                    timestamp=0,
+                ),
+            ],
+        )
+        complete_log = mod.SessionLog(
+            session_id=session_id,
+            logs=[
+                mod.CloudWatchLogEvent(
+                    ingestion_time=0,
+                    message="this contains partial logs",
+                    timestamp=0,
+                ),
+                mod.CloudWatchLogEvent(
+                    ingestion_time=0,
+                    message=message_only_in_complete_logs,
+                    timestamp=0,
+                ),
+            ],
+        )
+
+        with (
+            patch.object(
+                session,
+                "get_session_log",
+                side_effect=(
+                    # Return partial log before performing the specified number of retries
+                    ([partial_log] * retries_before_success)
+                    # The complete log
+                    + [complete_log]
+                ),
+            ) as mock_get_session_log,
+            patch.object(mod.time, "sleep") as mock_time_sleep,
+        ):
+
+            # WHEN
+            session.assert_log_contains(
+                logs_client=logs_client,
+                expected_pattern=re.compile(re.escape(message_only_in_complete_logs)),
+            )
+
+            # THEN
+            mock_get_session_log.assert_has_calls(
+                [call(logs_client=logs_client)] * (retries_before_success + 1)
+            )
+            mock_time_sleep.assert_has_calls(
+                [call(0.3 * (2.0**i)) for i in range(retries_before_success)]
+            )
+
+    @pytest.mark.parametrize(
+        argnames="log_event_messages",
+        argvalues=(
+            pytest.param(["a", "b"], id="2events"),
+            pytest.param(["a", "b", "c"], id="3events"),
+        ),
+    )
+    def test_get_session_log(
+        self,
+        session: Session,
+        log_event_messages: list[str],
+    ) -> None:
+        # GIVEN
+        logs_client = MagicMock()
+        logs_client.get_paginator.return_value.paginate.return_value.build_full_result.return_value = {
+            "events": [
+                {
+                    "ingestionTime": i,
+                    "message": message,
+                    "timestamp": i,
+                }
+                for i, message in enumerate(log_event_messages)
+            ]
+        }
+
+        # WHEN
+        result = session.get_session_log(logs_client=logs_client)
+
+        # THEN
+        assert isinstance(result, mod.SessionLog)
+        assert result.session_id == session.id
+        for log_event, expected_message in zip(result.logs, log_event_messages):
+            assert log_event.message == expected_message
