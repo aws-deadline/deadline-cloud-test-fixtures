@@ -228,7 +228,7 @@ class PipInstall:  # pragma: no cover
             )
 
         if self.upgrade_pip:
-            cmds.append("pip install --upgrade pip")
+            cmds.append("python -m pip install --upgrade pip")
 
         cmds.append(
             " ".join(
