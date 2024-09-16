@@ -281,6 +281,7 @@ class EC2InstanceWorker(DeadlineWorker):
             ssm_waiter.wait(
                 InstanceId=self.instance_id,
                 CommandId=command_id,
+                WaiterConfig={"Delay": 5, "MaxAttempts": 30},
             )
         except botocore.exceptions.WaiterError:  # pragma: no cover
             # Swallow exception, we're going to check the result anyway
