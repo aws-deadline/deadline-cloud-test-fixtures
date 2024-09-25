@@ -5,8 +5,10 @@ from __future__ import annotations
 import datetime
 import json
 import re
+from collections.abc import Generator
 from dataclasses import asdict, replace
-from typing import Any, Generator, cast
+from datetime import timedelta
+from typing import Any, cast
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -14,11 +16,11 @@ import pytest
 from deadline_test_fixtures import (
     CloudWatchLogEvent,
     Farm,
-    Queue,
     Fleet,
-    QueueFleetAssociation,
     Job,
     JobAttachmentSettings,
+    Queue,
+    QueueFleetAssociation,
     Session,
     Step,
     Task,
@@ -31,6 +33,7 @@ from deadline_test_fixtures.models import JobRunAsUser, PosixSessionUser, Window
 @pytest.fixture(autouse=True)
 def wait_for_shim() -> Generator[None, None, None]:
     import sys
+
     from deadline_test_fixtures.util import wait_for
 
     # Force the wait_for to have a short interval for unit tests
@@ -356,6 +359,26 @@ def session(
         worker_id=worker_id,
         worker_log=worker_log_config,
     )
+
+
+@pytest.fixture(scope="function")
+def log_client():
+    def configure_log_client(session: Session, log_messages: list[str]):
+        logs_client = MagicMock()
+        logs = mod.SessionLog(
+            session_id=session.id,
+            logs=[
+                mod.CloudWatchLogEvent(
+                    ingestion_time=i,
+                    message=message,
+                    timestamp=i,
+                )
+                for i, message in enumerate(log_messages)
+            ],
+        )
+        return logs_client, logs
+
+    return configure_log_client
 
 
 class TestFarm:
@@ -1025,6 +1048,51 @@ class TestJob:
             CloudWatchLogEvent.from_api_response(le) for le in log_events[1]["events"]
         ]
 
+    def test_get_only_task_fail_on_multi_task(self, job: Job) -> None:
+        # GIVEN
+        deadline_client = MagicMock()
+        step = MagicMock()
+        task = MagicMock()
+        step.list_tasks.return_value = [task, task]
+        task.get_last_session.return_value = session
+
+        with (patch.object(job, "list_steps", return_value=[step]) as mock_list_steps,):
+
+            # WHEN
+            def when():
+                job.get_only_task(deadline_client=deadline_client)
+
+            # THEN
+            with pytest.raises(AssertionError) as raise_ctx:
+                when()
+
+        print(raise_ctx.value)
+
+        assert raise_ctx.match("Job contains multiple tasks")
+        mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
+        step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
+        task.get_last_session.assert_not_called()
+
+    def test_get_only_task_fail_on_multi_step(self, job: Job) -> None:
+        # GIVEN
+        deadline_client = MagicMock()
+        step = MagicMock()
+
+        with (patch.object(job, "list_steps", return_value=[step, step]) as mock_list_steps,):
+            # WHEN
+            def when():
+                job.get_only_task(deadline_client=deadline_client)
+
+            # THEN
+            with pytest.raises(AssertionError) as raise_ctx:
+                when()
+
+        print(raise_ctx.value)
+
+        assert raise_ctx.match("Job contains multiple steps")
+        mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
+        step.list_tasks.assert_not_called()
+
     def test_assert_single_task_log_contains_success(self, job: Job, session: Session) -> None:
         # GIVEN
         deadline_client = MagicMock()
@@ -1061,63 +1129,44 @@ class TestJob:
         step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
         task.get_last_session.assert_called_once_with(deadline_client=deadline_client)
 
-    def test_assert_single_task_log_contains_multi_step(self, job: Job) -> None:
-        # GIVEN
-        deadline_client = MagicMock()
-        logs_client = MagicMock()
-        step = MagicMock()
-        expected_pattern = re.compile(r"a message")
-
-        with (patch.object(job, "list_steps", return_value=[step, step]) as mock_list_steps,):
-
-            # WHEN
-            def when():
-                job.assert_single_task_log_contains(
-                    deadline_client=deadline_client,
-                    logs_client=logs_client,
-                    expected_pattern=expected_pattern,
-                )
-
-            # THEN
-            with pytest.raises(AssertionError) as raise_ctx:
-                when()
-
-        print(raise_ctx.value)
-
-        assert raise_ctx.match("Job contains multiple steps")
-        mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
-        step.list_tasks.assert_not_called()
-
-    def test_assert_single_task_log_contains_multi_task(self, job: Job, session: Session) -> None:
+    def test_assert_single_task_log_does_not_contain_success(
+        self, job: Job, session: Session
+    ) -> None:
         # GIVEN
         deadline_client = MagicMock()
         logs_client = MagicMock()
         step = MagicMock()
         task = MagicMock()
-        step.list_tasks.return_value = [task, task]
+        step.list_tasks.return_value = [task]
         task.get_last_session.return_value = session
         expected_pattern = re.compile(r"a message")
 
-        with (patch.object(job, "list_steps", return_value=[step]) as mock_list_steps,):
+        with (
+            patch.object(job, "list_steps", return_value=[step]) as mock_list_steps,
+            patch.object(
+                session, "assert_log_does_not_contain"
+            ) as mock_session_assert_log_does_not_contain,
+        ):
 
             # WHEN
-            def when():
-                job.assert_single_task_log_contains(
-                    deadline_client=deadline_client,
-                    logs_client=logs_client,
-                    expected_pattern=expected_pattern,
-                )
+            job.assert_single_task_log_does_not_contain(
+                deadline_client=deadline_client,
+                logs_client=logs_client,
+                expected_pattern=expected_pattern,
+            )
 
-            # THEN
-            with pytest.raises(AssertionError) as raise_ctx:
-                when()
-
-        print(raise_ctx.value)
-
-        assert raise_ctx.match("Job contains multiple tasks")
+        # THEN
+        # This test is only to confirm that no assertion is raised, since the expected message
+        # is in the logs
+        mock_session_assert_log_does_not_contain.assert_called_once_with(
+            logs_client=logs_client,
+            expected_pattern=expected_pattern,
+            assert_fail_msg="Expected message found in session log",
+            consistency_wait_time=timedelta(seconds=3),
+        )
         mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
         step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
-        task.get_last_session.assert_not_called()
+        task.get_last_session.assert_called_once_with(deadline_client=deadline_client)
 
     def test_list_steps(
         self,
@@ -1376,13 +1425,14 @@ class TestTask:
 
 
 class TestSession:
-    @pytest.mark.parametrize(
-        argnames=("expected_pattern", "log_messages"),
-        argvalues=(
+
+    base_assertion_args = (
+        ("expected_pattern", "log_messages"),
+        (
             pytest.param("PATTERN", ["PATTERN"], id="exact-match"),
             pytest.param("PATTERN", ["PATTERN at beginning"], id="match-beginning"),
             pytest.param("PATTERN", ["ends with PATTERN"], id="match-end"),
-            pytest.param("PATTERN", ["multiline with", "the PATTERN"], id="match-end"),
+            pytest.param("PATTERN", ["multiline with", "the PATTERN"], id="multi-line"),
             pytest.param(
                 re.compile(r"This is\na multiline pattern", re.MULTILINE),
                 ["extra lines", "This is", "a multiline pattern", "embedded"],
@@ -1395,25 +1445,17 @@ class TestSession:
             ),
         ),
     )
+
+    @pytest.mark.parametrize(*base_assertion_args)
     def test_assert_logs_success(
         self,
         session: Session,
         expected_pattern: str | re.Pattern,
         log_messages: list[str],
+        log_client,
     ) -> None:
         # GIVEN
-        logs_client = MagicMock()
-        logs = mod.SessionLog(
-            session_id=session.id,
-            logs=[
-                mod.CloudWatchLogEvent(
-                    ingestion_time=i,
-                    message=message,
-                    timestamp=i,
-                )
-                for i, message in enumerate(log_messages)
-            ],
-        )
+        logs_client, logs = log_client(session, log_messages)
 
         with (
             patch.object(session, "get_session_log", return_value=logs) as mock_get_session_log,
@@ -1431,6 +1473,113 @@ class TestSession:
         # (no exception is raised)
         mock_get_session_log.assert_called_once_with(logs_client=logs_client)
         mock_time_sleep.assert_not_called()
+
+    @pytest.mark.parametrize(*base_assertion_args)
+    def test_assert_logs_does_not_contain_fail(
+        self,
+        session: Session,
+        expected_pattern: str | re.Pattern,
+        log_messages: list[str],
+        log_client,
+    ) -> None:
+        # GIVEN
+        logs_client, logs = log_client(session, log_messages)
+        expected_assertion_msg = (
+            "Expected message found in session log."
+            " Logs are in CloudWatch log group: sessionLogGroup"
+        )
+        with (
+            patch.object(session, "get_session_log", return_value=logs) as mock_get_session_log,
+            # Speed up tests
+            patch.object(mod.time, "sleep") as mock_time_sleep,
+        ):
+
+            # WHEN
+            def when():
+                session.assert_log_does_not_contain(
+                    logs_client=logs_client,
+                    expected_pattern=expected_pattern,
+                )
+
+            # THEN
+            with pytest.raises(AssertionError) as raise_ctx:
+                when()
+            assert raise_ctx.value.args[0] == expected_assertion_msg
+            mock_get_session_log.assert_called_once_with(logs_client=logs_client)
+            mock_time_sleep.assert_not_called()
+
+    @pytest.mark.parametrize(
+        argnames=("expected_pattern", "log_messages"),
+        argvalues=(
+            pytest.param("DOES NOT MATCH", ["PATTERN"], id="no-match"),
+            pytest.param(
+                re.compile(r"There is\nno match", re.MULTILINE),
+                ["extra lines", "This is", "a multiline pattern", "embedded"],
+                id="multi-line-no-match",
+            ),
+        ),
+    )
+    def test_assert_logs_does_not_contain_success(
+        self,
+        session: Session,
+        expected_pattern: str | re.Pattern,
+        log_messages: list[str],
+        log_client,
+    ) -> None:
+        # GIVEN
+        logs_client, logs = log_client(session, log_messages)
+
+        with (
+            patch.object(session, "get_session_log", return_value=logs) as mock_get_session_log,
+            # Speed up tests
+            patch.object(mod.time, "sleep") as mock_time_sleep,
+        ):
+
+            # WHEN
+            session.assert_log_does_not_contain(
+                logs_client=logs_client,
+                expected_pattern=expected_pattern,
+            )
+
+        # THEN
+        # (no exception is raised)
+        mock_get_session_log.assert_has_calls([call(logs_client=logs_client)] * 2)
+        mock_time_sleep.assert_called_once_with(4.5)  # 4.5 is default sleep duration
+
+    @pytest.mark.parametrize(
+        argnames=("sleep_duration"),
+        argvalues=(
+            pytest.param(timedelta(seconds=9), id="custom-duration"),
+            pytest.param(timedelta(seconds=0), id="no-sleep"),
+        ),
+    )
+    def test_assert_logs_does_not_contain_sleeps(
+        self, session: Session, sleep_duration: timedelta, log_client
+    ) -> None:
+        # GIVEN
+        logs_client, logs = log_client(session, ["PATTERN"])
+
+        with (
+            patch.object(session, "get_session_log", return_value=logs) as mock_get_session_log,
+            # Speed up tests
+            patch.object(mod.time, "sleep") as mock_time_sleep,
+        ):
+
+            # WHEN
+            session.assert_log_does_not_contain(
+                logs_client=logs_client,
+                expected_pattern="DOES NOT MATCH",
+                consistency_wait_time=sleep_duration,
+            )
+
+        # THEN
+        # (no exception is raised)
+        if sleep_duration.total_seconds() > 0:
+            mock_time_sleep.assert_called_once_with(sleep_duration.total_seconds())
+            mock_get_session_log.assert_has_calls([call(logs_client=logs_client)] * 2)
+        else:
+            mock_get_session_log.assert_called_once_with(logs_client=logs_client)
+            mock_time_sleep.assert_not_called()
 
     @pytest.mark.parametrize(
         argnames="assert_fail_msg",

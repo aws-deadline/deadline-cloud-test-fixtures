@@ -6,19 +6,20 @@ import json
 import logging
 import re
 import time
+from collections.abc import Generator
 from dataclasses import asdict, dataclass, fields
 from datetime import timedelta
 from enum import Enum
-from typing import Any, Callable, Generator, Literal, TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Union
 
 from botocore.client import BaseClient
 
-from .client import DeadlineClient
 from ..models import JobAttachmentSettings, JobRunAsUser
 from ..util import call_api, clean_kwargs, wait_for
+from .client import DeadlineClient
 
 if TYPE_CHECKING:
-    from botocore.paginate import Paginator, PageIterator
+    from botocore.paginate import PageIterator, Paginator
 
 LOG = logging.getLogger(__name__)
 
@@ -707,6 +708,27 @@ class Job:
                     ),
                 )
 
+    def get_only_task(
+        self,
+        *,
+        deadline_client: DeadlineClient,
+    ) -> Task:
+        """
+        Asserts that the job has a single step and a single task, and returns the task.
+
+        Args:
+            deadline_client (deadline_test_fixtures.client.DeadlineClient): Deadline boto client
+        Return:
+            task: The single task of the job
+        """
+        # Assert there is a single step and task
+        steps = list(self.list_steps(deadline_client=deadline_client))
+        assert len(steps) == 1, "Job contains multiple steps"
+        step = steps[0]
+        tasks = list(step.list_tasks(deadline_client=deadline_client))
+        assert len(tasks) == 1, "Job contains multiple tasks"
+        return tasks[0]
+
     def assert_single_task_log_contains(
         self,
         *,
@@ -754,13 +776,7 @@ class Job:
         if isinstance(expected_pattern, str):
             expected_pattern = re.compile(expected_pattern)
 
-        # Assert there is a single step and task
-        steps = list(self.list_steps(deadline_client=deadline_client))
-        assert len(steps) == 1, "Job contains multiple steps"
-        step = steps[0]
-        tasks = list(step.list_tasks(deadline_client=deadline_client))
-        assert len(tasks) == 1, "Job contains multiple tasks"
-        task = tasks[0]
+        task = self.get_only_task(deadline_client=deadline_client)
 
         session = task.get_last_session(deadline_client=deadline_client)
         session.assert_log_contains(
@@ -769,6 +785,54 @@ class Job:
             assert_fail_msg=assert_fail_msg,
             backoff_factor=backoff_factor,
             retries=retries,
+        )
+
+    def assert_single_task_log_does_not_contain(
+        self,
+        *,
+        deadline_client: DeadlineClient,
+        logs_client: BaseClient,
+        expected_pattern: re.Pattern | str,
+        assert_fail_msg: str = "Expected message found in session log",
+        consistency_wait_time: timedelta = timedelta(seconds=3),
+    ) -> None:
+        """
+        Asserts that the expected regular expression pattern doesn't exist in the job's session log.
+
+        This method is intended for jobs with a single step and task. It checks the logs of the
+        last run session for the single task.
+
+        The method accounts for the eventual-consistency of CloudWatch log delivery and availability
+        through CloudWatch APIs by a configurable wait time. The method does an initial immediate
+        check, then waits for the configured consistency wait time before checking again, if the
+        wait time is greater than zero. If neither check (or one check if wait time is zero) matches
+        the expected pattern then the log is assumed to not contain the given line.
+
+        Args:
+            deadline_client (deadline_test_fixtures.client.DeadlineClient): Deadline boto client
+            logs_client (botocore.clients.BaseClient): CloudWatch logs boto client
+            expected_pattern (re.Pattern | str): Either a regular expression pattern string, or a
+                pre-compiled regular expression Pattern object. This is pattern is searched against
+                each of the job's session logs, contatenated as a multi-line string joined by
+                a single newline character (\\n).
+            assert_fail_msg (str): The assertion message to raise if the pattern is found
+                The CloudWatch log group name is appended to the end of this message to assist
+                with diagnosis. The default is "Expected message found in session log".
+            consistency_wait_time (datetime.timedelta): Wait time between first and second check.
+                Default is 3s, wait times opperates in second increments.
+        """
+        # Coerce Regex str patterns to a re.Pattern
+        if isinstance(expected_pattern, str):
+            expected_pattern = re.compile(expected_pattern)
+
+        task = self.get_only_task(deadline_client=deadline_client)
+
+        session = task.get_last_session(deadline_client=deadline_client)
+        session.assert_log_does_not_contain(
+            logs_client=logs_client,
+            expected_pattern=expected_pattern,
+            assert_fail_msg=assert_fail_msg,
+            consistency_wait_time=consistency_wait_time,
         )
 
     @property
@@ -1167,6 +1231,61 @@ class Session:
             else:
                 return
 
+    def assert_log_does_not_contain(
+        self,
+        *,
+        logs_client: BaseClient,
+        expected_pattern: re.Pattern | str,
+        assert_fail_msg: str = "Expected message found in session log",
+        consistency_wait_time: timedelta = timedelta(seconds=4.5),
+    ) -> None:
+        """
+        Asserts that the expected regular expression pattern does not exist in the job's session log.
+
+        This method accounts for the eventual-consistency of CloudWatch log delivery and availability
+        through CloudWatch APIs by a configurable wait time. The method does an initial immediate
+        check, then waits for the configured consistency wait time before checking again, if the wait
+        time is greater than zero. If neither check (or one check if wait time is zero) matches the
+        expected pattern then the log is assumed to not contain the given line.
+
+        Args:
+            logs_client (botocore.clients.BaseClient): CloudWatch logs boto client
+            expected_pattern (re.Pattern | str): Either a regular expression pattern string, or a
+                pre-compiled regular expression Pattern object. This is pattern is searched against
+                each of the job's session logs, contatenated as a multi-line string joined by
+                a single newline character (\\n).
+            assert_fail_msg (str): The assertion message to raise if the pattern is found
+                The CloudWatch log group name is appended to the end of this message to assist
+                with diagnosis. The default is "Expected message found in session log".
+            consistency_wait_time (datetime.timedelta): Wait time between first and second check.
+                Default is 4.5 seconds.
+        """
+        # Coerce Regex str patterns to a re.Pattern
+        if isinstance(expected_pattern, str):
+            expected_pattern = re.compile(expected_pattern)
+
+        if not (session_log_config_options := self.logs.options):
+            raise ValueError('No "options" key in session "log" API response')
+        if not (log_group_name := session_log_config_options.get("logGroupName", None)):
+            raise ValueError('No "logGroupName" key in session "log" -> "options" API response')
+
+        session_log = self.get_session_log(logs_client=logs_client)
+        session_log.assert_pattern_not_in_log(
+            expected_pattern=expected_pattern,
+            failure_msg=f"{assert_fail_msg}. Logs are in CloudWatch log group: {log_group_name}",
+        )
+        if consistency_wait_time.total_seconds() > 0:
+            time.sleep(consistency_wait_time.total_seconds())
+            session_log = self.get_session_log(logs_client=logs_client)
+            session_log.assert_pattern_not_in_log(
+                expected_pattern=expected_pattern,
+                failure_msg=f"{assert_fail_msg}. Logs are in CloudWatch log group: {log_group_name}",
+            )
+        else:
+            LOG.warning(
+                "Expected pattern only checked for once. To check twice use non-zero consistency_wait_time"
+            )
+
 
 @dataclass
 class SessionLog:
@@ -1201,6 +1320,36 @@ class SessionLog:
 
         full_session_log = "\n".join(le.message for le in self.logs)
         assert expected_pattern.search(full_session_log), failure_msg
+
+    def assert_pattern_not_in_log(
+        self,
+        *,
+        expected_pattern: re.Pattern | str,
+        failure_msg: str,
+    ) -> None:
+        """
+        Asserts that a pattern is not found in the session log
+
+        Args:
+            expected_pattern (re.Pattern | str): Either a regular expression pattern string, or a
+                pre-compiled regular expression Pattern object. This is pattern is searched against
+                each of the job's session logs, contatenated as a multi-line string joined by
+                a single newline character (\\n).
+            failure_msg (str): A message to be raised in an AssertionError if the expected pattern
+                is found.
+
+        Raises:
+            AssertionError
+                Raised when the expected pattern is found in the session log. The argument to
+                the AssertionError is the value of the failure_msg argument
+        """
+        # Coerce Regex str patterns to a re.Pattern
+        if isinstance(expected_pattern, str):
+            expected_pattern = re.compile(expected_pattern)
+
+        full_session_log = "\n".join(le.message for le in self.logs)
+
+        assert True if expected_pattern.search(full_session_log) is None else False, failure_msg
 
 
 @dataclass
