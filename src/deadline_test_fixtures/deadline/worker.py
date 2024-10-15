@@ -92,6 +92,7 @@ class DeadlineWorkerConfiguration:
     start_service: bool = False
     no_install_service: bool = False
     service_model_path: str | None = None
+    no_local_session_logs: str | None = None
 
     """Mapping of files to copy from host environment to worker environment"""
     file_mappings: list[tuple[str, str]] | None = None
@@ -460,6 +461,12 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
                 f"Copy-Item -Path ~\\.aws\\* -Destination C:\\Users\\{config.job_user}\\.aws\\models -Recurse"
             )
 
+        if config.no_local_session_logs:
+            cmds.append(
+                "[System.Environment]::SetEnvironmentVariable('DEADLINE_WORKER_LOCAL_SESSION_LOGS', 'false', [System.EnvironmentVariableTarget]::Machine); "
+                "$env:DEADLINE_WORKER_LOCAL_SESSION_LOGS = [System.Environment]::GetEnvironmentVariable('DEADLINE_WORKER_LOCAL_SESSION_LOGS','Machine')",
+            )
+
         if os.environ.get("DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE"):
             LOG.info(
                 f"Using DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE: {os.environ.get('DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE')}"
@@ -667,6 +674,10 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
                 f"runuser -l {config.agent_user} -s /bin/bash -c 'aws configure add-model --service-model file://{config.service_model_path}'"
             )
 
+        if config.no_local_session_logs:
+            cmds.append(
+                f"runuser -l {config.agent_user} -s /bin/bash -c 'echo export DEADLINE_WORKER_LOCAL_SESSION_LOGS=false >> ~/.bashrc'",
+            )
         if os.environ.get("DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE"):
             LOG.info(
                 f"Using DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE: {os.environ.get('DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE')}"
