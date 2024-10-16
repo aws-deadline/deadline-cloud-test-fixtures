@@ -736,7 +736,7 @@ class Job:
         logs_client: BaseClient,
         expected_pattern: re.Pattern | str,
         assert_fail_msg: str = "Expected message not found in session log",
-        retries: int = 4,
+        retries: int = 6,
         backoff_factor: timedelta = timedelta(milliseconds=300),
     ) -> None:
         """
@@ -1171,7 +1171,7 @@ class Session:
         logs_client: BaseClient,
         expected_pattern: re.Pattern | str,
         assert_fail_msg: str = "Expected message not found in session log",
-        retries: int = 4,
+        retries: int = 6,
         backoff_factor: timedelta = timedelta(milliseconds=300),
     ) -> None:
         """
