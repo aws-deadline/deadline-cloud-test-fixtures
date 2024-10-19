@@ -1123,7 +1123,7 @@ class TestJob:
             expected_pattern=expected_pattern,
             assert_fail_msg="Expected message not found in session log",
             backoff_factor=datetime.timedelta(milliseconds=300),
-            retries=4,
+            retries=6,
         )
         mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
         step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
@@ -1629,7 +1629,7 @@ class TestSession:
             f"{assert_fail_msg or 'Expected message not found in session log'}."
             f" Logs are in CloudWatch log group: {session_log_group_name}"
         )
-        expected_retries = retries if retries is not None else 4
+        expected_retries = retries if retries is not None else 6
         expected_backoff_factor = (
             backoff_factor if backoff_factor is not None else datetime.timedelta(milliseconds=300)
         )
