@@ -1,3 +1,15 @@
+## 0.15.0 (2024-10-21)
+
+### BREAKING CHANGES
+* increase retries for log contains utils  (#156) ([`3616a9b`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/3616a9b4da1ed98896e7a5a1bc34a0dc0e3dbd05))
+
+### Features
+* allow local session logs to be turned off in worker tests (#155) ([`656db75`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/656db7546325c013b52e02c360a8b81ecb6905b3))
+* Added negative log assertions (#154) ([`d75f580`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/d75f5807ca9235491bcbf43d0306048914f09d17))
+
+### Bug Fixes
+* add WaiterConfig to ssm command waiter (#152) ([`65b93ea`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/65b93eab837387e2776e427d273dbbeba8d73ef7))
+
 ## 0.14.0 (2024-09-05)
 
 ### BREAKING CHANGES
