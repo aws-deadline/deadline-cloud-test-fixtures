@@ -48,6 +48,12 @@ class JobRunAsUser:
 class OperatingSystem:
     name: Literal["AL2023", "WIN2022"]
 
+    def is_amazon_linux(self) -> bool:
+        return self.name.startswith("AL")
+
+    def is_windows(self) -> bool:
+        return self.name.startswith("WIN")
+
 
 @dataclass(frozen=True)
 class CodeArtifactRepositoryInfo:

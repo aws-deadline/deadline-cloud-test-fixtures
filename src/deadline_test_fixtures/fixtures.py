@@ -413,6 +413,7 @@ def worker_config(
     Builds the configuration for a DeadlineWorker.
 
     Environment Variables:
+        OPENJD_SESSIONS_WHL_PATH: Path to the openjd-sessions wheel file to use.
         WORKER_POSIX_USER: The POSIX user to configure the worker for
             Defaults to "deadline-worker"
         WORKER_POSIX_SHARED_GROUP: The shared POSIX group to configure the worker user and job user with
@@ -434,6 +435,8 @@ def worker_config(
             "DEPRECATED: The environment variable WORKER_REGION is no longer supported. Please use REGION instead."
         )
 
+    pip_install_requirement_specifiers: list[str] = []
+
     # Prepare the Worker agent Python package
     worker_agent_whl_path = os.getenv("WORKER_AGENT_WHL_PATH")
     if worker_agent_whl_path:
@@ -444,23 +447,52 @@ def worker_config(
         ), f"Expected exactly one Worker agent whl path, but got {resolved_whl_paths} (from pattern {worker_agent_whl_path})"
         resolved_whl_path = resolved_whl_paths[0]
 
-        if operating_system.name == "AL2023":
+        if operating_system.is_amazon_linux():
             dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
-        else:
+        elif operating_system.is_windows():
             dest_path = posixpath.join(
                 "C:\\Windows\\System32\\Config\\systemprofile\\AppData\\Local\\Temp",
                 os.path.basename(resolved_whl_path),
             )
+        else:
+            raise NotImplementedError(f"Unsupported operating system: {operating_system.name}")
         file_mappings = [(resolved_whl_path, dest_path)]
 
-        LOG.info(f"The whl file will be copied to {dest_path} on the Worker environment")
-        worker_agent_requirement_specifier = dest_path
+        LOG.info(
+            f"The worker agent whl file will be copied to {dest_path} on the Worker environment"
+        )
+        pip_install_requirement_specifiers.append(dest_path)
     else:
         worker_agent_requirement_specifier = os.getenv(
             "WORKER_AGENT_REQUIREMENT_SPECIFIER",
             "deadline-cloud-worker-agent",
         )
         LOG.info(f"Using Worker agent package {worker_agent_requirement_specifier}")
+        pip_install_requirement_specifiers.append(worker_agent_requirement_specifier)
+
+    openjd_sessions_whl_path = os.getenv("OPENJD_SESSIONS_WHL_PATH")
+    if openjd_sessions_whl_path:
+        LOG.info(f"Using openjd-sessions agent whl file: {openjd_sessions_whl_path}")
+        resolved_whl_paths = glob.glob(openjd_sessions_whl_path)
+        assert (
+            len(resolved_whl_paths) == 1
+        ), f"Expected exactly one openjd-sessions whl path, but got {resolved_whl_paths} (from pattern {openjd_sessions_whl_path})"
+        resolved_whl_path = resolved_whl_paths[0]
+
+        if operating_system.is_amazon_linux():
+            dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
+        elif operating_system.is_windows():
+            dest_path = posixpath.join(
+                "C:\\Windows\\System32\\Config\\systemprofile\\AppData\\Local\\Temp",
+                os.path.basename(resolved_whl_path),
+            )
+        else:
+            raise NotImplementedError(f"Unsupported operating system: {operating_system.name}")
+        file_mappings.append((resolved_whl_path, dest_path))
+        LOG.info(
+            f"The openjd-sessions whl file will be copied to {dest_path} on the Worker environment"
+        )
+        pip_install_requirement_specifiers.append(dest_path)
 
     # Path map the service model
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -470,12 +502,14 @@ def worker_config(
         with src_path.open(mode="w") as f:
             json.dump(service_model.model, f)
 
-        if operating_system.name == "AL2023":
+        if operating_system.is_amazon_linux():
             dst_path = posixpath.join("/tmp", src_path.name)
-        else:
+        elif operating_system.is_windows():
             dst_path = posixpath.join(
                 "C:\\Windows\\System32\\Config\\systemprofile\\AppData\\Local\\Temp", src_path.name
             )
+        else:
+            raise NotImplementedError(f"Unsupported operating system: {operating_system.name}")
         LOG.info(f"The service model will be copied to {dst_path} on the Worker environment")
         file_mappings.append((str(src_path), dst_path))
 
@@ -485,7 +519,7 @@ def worker_config(
             region=region,
             allow_shutdown=True,
             worker_agent_install=PipInstall(
-                requirement_specifiers=[worker_agent_requirement_specifier],
+                requirement_specifiers=pip_install_requirement_specifiers,
                 codeartifact=codeartifact,
             ),
             service_model_path=dst_path,
