@@ -89,7 +89,7 @@ class DeadlineWorkerConfiguration:
     region: str
     allow_shutdown: bool
     worker_agent_install: PipInstall
-    start_service: bool = False
+    start_service: bool = True
     no_install_service: bool = False
     service_model_path: str | None = None
     no_local_session_logs: str | None = None
@@ -634,29 +634,12 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
         assert cmd_result.exit_code == 0, f"Failed to configure Worker agent: {cmd_result}"
         LOG.info("Successfully configured Worker agent")
 
-        LOG.info(f"Sending SSM command to start Worker agent on instance {self.instance_id}")
-        cmd_result = self.send_command(
-            "; ".join(
-                [
-                    " && ".join(
-                        [
-                            "set -x",
-                            f"nohup runuser --login {self.configuration.agent_user} -c 'AWS_DEFAULT_REGION={self.configuration.region} deadline-worker-agent > /tmp/worker-agent-stdout.txt 2>&1 &'",
-                            # Verify Worker is still running
-                            "echo Waiting 5s for agent to get started",
-                            "sleep 5",
-                            "echo 'Running pgrep to see if deadline-worker-agent is running'",
-                            # Note: pgrep has a non-zero exit code if no matching application can be found.
-                            f"pgrep --count --full -u {self.configuration.agent_user} deadline-worker-agent",
-                        ],
-                    ),
-                    # If the worker didn't start, then print out the agent logs that exist to aid in debugging.
-                    "if test $? -ne 0; then echo '+++AGENT NOT RUNNING+++'; cat /var/log/amazon/deadline/worker-agent-bootstrap.log /var/log/amazon/deadline/worker-agent.log; exit 1; fi",
-                ]
+        if self.configuration.start_service:
+            LOG.info(
+                f"Sending SSM command to configure Worker agent on instance {self.instance_id}"
             )
-        )
-        assert cmd_result.exit_code == 0, f"Failed to start Worker agent: {cmd_result}"
-        LOG.info("Successfully started Worker agent")
+            self.start_worker_service()
+            LOG.info("Successfully started worker agent")
 
         self.worker_id = self.get_worker_id()
 
@@ -674,32 +657,55 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
                 f"runuser -l {config.agent_user} -s /bin/bash -c 'aws configure add-model --service-model file://{config.service_model_path}'"
             )
 
-        if config.no_local_session_logs:
+        allow_instance_profile = os.environ.get("DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE", None)
+        endpoint_url_deadline = os.environ.get("AWS_ENDPOINT_URL_DEADLINE", None)
+
+        # Create a systemd drop-in config file to apply the configuration
+        # See https://wiki.archlinux.org/title/Systemd#Drop-in_files
+        cmds.extend(
+            [
+                "mkdir -p /etc/systemd/system/deadline-worker.service.d/",
+                'echo "[Service]" > /etc/systemd/system/deadline-worker.service.d/config.conf',
+                # Configure the region
+                f'echo "Environment=AWS_REGION={config.region}" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
+                f'echo "Environment=AWS_DEFAULT_REGION={config.region}" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
+            ]
+        )
+
+        if allow_instance_profile is not None:
+            LOG.info(f"Using DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE: {allow_instance_profile}")
             cmds.append(
-                f"runuser -l {config.agent_user} -s /bin/bash -c 'echo export DEADLINE_WORKER_LOCAL_SESSION_LOGS=false >> ~/.bashrc'",
-            )
-        if os.environ.get("DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE"):
-            LOG.info(
-                f"Using DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE: {os.environ.get('DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE')}"
-            )
-            cmds.append(
-                f"runuser -l {config.agent_user} -s /bin/bash -c 'echo export DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE={os.environ.get('DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE')} >> ~/.bashrc'",
+                f'echo "Environment=DEADLINE_WORKER_ALLOW_INSTANCE_PROFILE={allow_instance_profile}" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
             )
 
-        if os.environ.get("AWS_ENDPOINT_URL_DEADLINE"):
-            LOG.info(
-                f"Using AWS_ENDPOINT_URL_DEADLINE: {os.environ.get('AWS_ENDPOINT_URL_DEADLINE')}"
-            )
+        if endpoint_url_deadline is not None:
+            LOG.info(f"Using AWS_ENDPOINT_URL_DEADLINE: {endpoint_url_deadline}")
             cmds.append(
-                f"runuser -l {config.agent_user} -s /bin/bash -c 'echo export AWS_ENDPOINT_URL_DEADLINE={os.environ.get('AWS_ENDPOINT_URL_DEADLINE')} >> ~/.bashrc'",
+                f'echo "Environment=AWS_ENDPOINT_URL_DEADLINE={endpoint_url_deadline}" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
             )
+
+        if config.no_local_session_logs:
+            cmds.append(
+                'echo "Environment=DEADLINE_WORKER_LOCAL_SESSION_LOGS=false" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
+            )
+
+            cmds.append("systemctl daemon-reload")
 
         return " && ".join(cmds)
 
     def start_worker_service(self):
         LOG.info("Sending command to start the Worker Agent service")
 
-        cmd_result = self.send_command("systemctl start deadline-worker")
+        cmd_result = self.send_command(
+            " && ".join(
+                [
+                    "systemctl start deadline-worker",
+                    "sleep 5",
+                    "systemctl is-active deadline-worker",
+                    "if test $? -ne 0; then echo '+++AGENT NOT RUNNING+++'; cat /var/log/amazon/deadline/worker-agent-bootstrap.log /var/log/amazon/deadline/worker-agent.log; exit 1; fi",
+                ]
+            )
+        )
 
         assert cmd_result.exit_code == 0, f"Failed to start Worker Agent service: {cmd_result}"
 
@@ -780,9 +786,6 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
         )
 
         cmds.append(self.configure_agent_user_environment(config))
-
-        if config.start_service:
-            cmds.append("systemctl start deadline-worker")
 
         return " && ".join(cmds)
 
@@ -1007,7 +1010,7 @@ class DockerContainerWorker(DeadlineWorker):
             nonlocal cmd_result
             try:
                 cmd_result = self.send_command(
-                    "cat /var/lib/deadline/worker.json | jq -r '.worker_id'",
+                    "cat /var/lib/deadline/worker.json | jq -r '.worker_id' || (cat /var/log/amazon/deadline/worker.log; false)",
                     quiet=True,
                 )
             except subprocess.CalledProcessError as e:
