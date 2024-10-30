@@ -1,3 +1,14 @@
+## 0.16.0 (2024-10-30)
+
+### BREAKING CHANGES
+* The default of `DeadlineWorkerConfiguration.start_service` was changed from `False` &rarr; `True`
+* Downstream consumers of this package may have relied on a bug where the worker agent being started through an SSM command (see #160)
+
+### Bug Fixes
+* concurrent worker agent processes (#160) ([`9f7da7f`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/9f7da7f6873f0f25c7f67b34de7f1e28b85dc947))
+
+
+
 ## 0.15.0 (2024-10-21)
 
 ### BREAKING CHANGES
