@@ -93,6 +93,7 @@ class DeadlineWorkerConfiguration:
     no_install_service: bool = False
     service_model_path: str | None = None
     no_local_session_logs: str | None = None
+    disallow_instance_profile: str | None = None
 
     """Mapping of files to copy from host environment to worker environment"""
     file_mappings: list[tuple[str, str]] | None = None
@@ -544,6 +545,7 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
                 + f"--region {config.region} "
                 + f"--user {config.agent_user} "
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
+                + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
             ),
             # fmt: on
         ]
@@ -767,6 +769,7 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
                 + f"--group {config.job_user_group} "
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
                 + f"{'--no-install-service ' if config.no_install_service else ''}"
+                + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
             ),
             # fmt: on
             f"runuser --login {self.configuration.agent_user} --command 'echo \"source /opt/deadline/worker/bin/activate\" >> $HOME/.bashrc'",
