@@ -1,3 +1,10 @@
+## 0.17.0 (2024-11-13)
+
+
+### Features
+* allow worker config tests to disallow instance profile (#162) ([`db6f441`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/db6f441c30d6b8d9070ebe5001d7a67960c7a3c5))
+
+
 ## 0.16.0 (2024-10-30)
 
 ### BREAKING CHANGES
