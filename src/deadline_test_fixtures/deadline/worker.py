@@ -453,7 +453,7 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
         This cannot assume that the agent user exists.
         """
 
-        cmds = []
+        cmds = ["$ErrorActionPreference = 'Stop'"]
 
         if config.service_model_path:
             cmds.append(
