@@ -1,3 +1,12 @@
+## 0.17.1 (2024-11-21)
+
+
+### Features
+* ability to supply openjd-sessions Python wheel (#165) ([`df45370`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/df453704dad2b7b00ec0573993396cbbe99eb9d1))
+
+### Bug Fixes
+* incorrect filesystem paths to files fetched from S3 by userdata (#164) ([`5a6c0ee`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/5a6c0ee76934e1bf06a25e39c285633336ccafb9))
+
 ## 0.17.0 (2024-11-13)
 
 
