@@ -1,3 +1,10 @@
+## 0.17.2 (2024-12-14)
+
+
+
+### Bug Fixes
+* increase disk size temporarily to allow more than 4GB of space on windows (#168) ([`7c33f67`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/7c33f67ec3c88009591b81995d5b956eba7f8d68))
+
 ## 0.17.1 (2024-11-21)
 
 
