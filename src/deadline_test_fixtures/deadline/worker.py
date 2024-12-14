@@ -358,7 +358,9 @@ class EC2InstanceWorker(DeadlineWorker):
                 sort_keys=True,
             )
         )
+
         run_instance_response = self.ec2_client.run_instances(
+            BlockDeviceMappings=[{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": 60}}],
             MinCount=1,
             MaxCount=1,
             ImageId=self.ami_id,
