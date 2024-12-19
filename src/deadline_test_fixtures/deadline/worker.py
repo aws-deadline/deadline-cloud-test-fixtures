@@ -95,22 +95,26 @@ class DeadlineWorkerConfiguration:
     no_local_session_logs: str | None = None
     disallow_instance_profile: str | None = None
 
-    """Mapping of files to copy from host environment to worker environment"""
     file_mappings: list[tuple[str, str]] | None = None
+    """Mapping of files to copy from host environment to worker environment"""
 
-    """Commands to run before installing the Worker agent"""
     pre_install_commands: list[str] | None = None
+    """Commands to run before installing the Worker agent"""
 
     job_user: str = field(default="job-user")
     agent_user: str = field(default="deadline-worker")
     job_user_group: str = field(default="deadline-job-users")
 
-    """Additional job users to configure for Posix workers"""
     job_users: list[PosixSessionUser] = field(
         default_factory=lambda: [PosixSessionUser("job-user", "job-user")]
     )
-    """Additional job users to configure for Windows workers"""
+    """Additional job users to configure for Posix workers"""
+
     windows_job_users: list = field(default_factory=lambda: ["job-user"])
+    """Additional job users to configure for Windows workers"""
+
+    session_root_dir: str | None = None
+    """Path to parent directory of worker session directories"""
 
 
 @dataclass
@@ -548,6 +552,7 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
                 + f"--user {config.agent_user} "
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
                 + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
+                + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
             ),
             # fmt: on
         ]
@@ -772,6 +777,7 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
                 + f"{'--no-install-service ' if config.no_install_service else ''}"
                 + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
+                + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
             ),
             # fmt: on
             f"runuser --login {self.configuration.agent_user} --command 'echo \"source /opt/deadline/worker/bin/activate\" >> $HOME/.bashrc'",
