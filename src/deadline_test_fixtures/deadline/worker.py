@@ -359,17 +359,16 @@ class EC2InstanceWorker(DeadlineWorker):
             )
         )
 
-        run_instance_response = self.ec2_client.run_instances(
-            BlockDeviceMappings=[{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": 60}}],
-            MinCount=1,
-            MaxCount=1,
-            ImageId=self.ami_id,
-            InstanceType=self.instance_type,
-            IamInstanceProfile={"Name": self.instance_profile_name},
-            SubnetId=self.subnet_id,
-            SecurityGroupIds=[self.security_group_id],
-            MetadataOptions={"HttpTokens": "required", "HttpEndpoint": "enabled"},
-            TagSpecifications=[
+        run_instance_request = {
+            "MinCount": 1,
+            "MaxCount": 1,
+            "ImageId": self.ami_id,
+            "InstanceType": self.instance_type,
+            "IamInstanceProfile": {"Name": self.instance_profile_name},
+            "SubnetId": self.subnet_id,
+            "SecurityGroupIds": [self.security_group_id],
+            "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"},
+            "TagSpecifications": [
                 {
                     "ResourceType": "instance",
                     "Tags": [
@@ -380,9 +379,17 @@ class EC2InstanceWorker(DeadlineWorker):
                     ],
                 }
             ],
-            InstanceInitiatedShutdownBehavior=self.instance_shutdown_behavior,
-            UserData=self.userdata(s3_files),
-        )
+            "InstanceInitiatedShutdownBehavior": self.instance_shutdown_behavior,
+            "UserData": self.userdata(s3_files),
+        }
+
+        if isinstance(self, WindowsInstanceBuildWorker):
+            # increase default disk space only on Windows instances, 30GB is not enough and this matches SMF
+            run_instance_request["BlockDeviceMappings"] = [
+                {"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": 60}}
+            ]
+
+        run_instance_response = self.ec2_client.run_instances(**run_instance_request)
 
         self.instance_id = run_instance_response["Instances"][0]["InstanceId"]
         LOG.info(f"Launched EC2 instance {self.instance_id}")
