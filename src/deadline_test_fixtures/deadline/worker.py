@@ -175,8 +175,14 @@ class EC2InstanceWorker(DeadlineWorker):
     def get_worker_id(self) -> str:
         raise NotImplementedError("'get_worker_id' was not implemented.")
 
+    @abc.abstractmethod
     def userdata(self, s3_files) -> str:
         raise NotImplementedError("'userdata' was not implemented.")
+
+    @abc.abstractmethod
+    def ebs_devices(self) -> dict[str, int] | None:
+        """DeviceName -> VolumeSize (in GiBs) mapping"""
+        raise NotImplementedError("'ebs_devices' was not implemented.")
 
     def start(self) -> None:
         s3_files = self._stage_s3_bucket()
@@ -363,17 +369,16 @@ class EC2InstanceWorker(DeadlineWorker):
             )
         )
 
-        run_instance_response = self.ec2_client.run_instances(
-            BlockDeviceMappings=[{"DeviceName": "/dev/sda1", "Ebs": {"VolumeSize": 60}}],
-            MinCount=1,
-            MaxCount=1,
-            ImageId=self.ami_id,
-            InstanceType=self.instance_type,
-            IamInstanceProfile={"Name": self.instance_profile_name},
-            SubnetId=self.subnet_id,
-            SecurityGroupIds=[self.security_group_id],
-            MetadataOptions={"HttpTokens": "required", "HttpEndpoint": "enabled"},
-            TagSpecifications=[
+        run_instance_request = {
+            "MinCount": 1,
+            "MaxCount": 1,
+            "ImageId": self.ami_id,
+            "InstanceType": self.instance_type,
+            "IamInstanceProfile": {"Name": self.instance_profile_name},
+            "SubnetId": self.subnet_id,
+            "SecurityGroupIds": [self.security_group_id],
+            "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"},
+            "TagSpecifications": [
                 {
                     "ResourceType": "instance",
                     "Tags": [
@@ -384,9 +389,18 @@ class EC2InstanceWorker(DeadlineWorker):
                     ],
                 }
             ],
-            InstanceInitiatedShutdownBehavior=self.instance_shutdown_behavior,
-            UserData=self.userdata(s3_files),
-        )
+            "InstanceInitiatedShutdownBehavior": self.instance_shutdown_behavior,
+            "UserData": self.userdata(s3_files),
+        }
+
+        devices = self.ebs_devices() or {}
+        device_mappings = [
+            {"DeviceName": name, "Ebs": {"VolumeSize": size}} for name, size in devices.items()
+        ]
+        if device_mappings:
+            run_instance_request["BlockDeviceMappings"] = device_mappings
+
+        run_instance_response = self.ec2_client.run_instances(**run_instance_request)
 
         self.instance_id = run_instance_response["Instances"][0]["InstanceId"]
         LOG.info(f"Launched EC2 instance {self.instance_id}")
@@ -427,6 +441,11 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
     2. A host that already has the worker agent, job/agent users, and the like baked into
        the host AMI in a location & manner that may differ from case (1).
     """
+
+    def ebs_devices(self) -> dict[str, int] | None:
+        """DeviceName -> VolumeSize (in GiBs) mapping"""
+        # defaults to 60GB to match SMF, aws gives 30GB by default
+        return {"/dev/sda1": 60}
 
     def ssm_document_name(self) -> str:
         return "AWS-RunPowerShellScript"
@@ -625,6 +644,11 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
     2. A host that already has the worker agent, job/agent users, and the like baked into
        the host AMI in a location & manner that may differ from case (1).
     """
+
+    def ebs_devices(self) -> dict[str, int] | None:
+        """DeviceName -> VolumeSize (in GiBs) mapping"""
+        # defaults to 30GB to match SMF, aws gives 8GB by default
+        return {"/dev/xvda": 30}
 
     def ssm_document_name(self) -> str:
         return "AWS-RunShellScript"
