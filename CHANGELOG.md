@@ -1,3 +1,12 @@
+## 0.17.3 (2025-01-09)
+
+
+### Features
+* configurable worker session root directory (#170) ([`0d20e33`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/0d20e33d695af0d174412ab1dc8343898f1b98af))
+
+### Bug Fixes
+* linux instance has unused ebs block device (#172) ([`50bfe43`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/50bfe43e5819011896e47140926b9d70d7811eb5))
+
 ## 0.17.2 (2024-12-14)
 
 
