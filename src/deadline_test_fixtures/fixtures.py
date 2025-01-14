@@ -15,7 +15,7 @@ import pytest
 import tempfile
 from contextlib import ExitStack, contextmanager
 from dataclasses import InitVar, dataclass, field, fields, MISSING
-from typing import Any, Generator, Type, TypeVar
+from typing import Any, Generator, Type, TypeVar, Tuple, Optional
 
 from .deadline.client import DeadlineClient
 from .deadline.resources import (
@@ -401,6 +401,35 @@ def deadline_resources(
             )
 
 
+def _get_resolved_dest_paths(
+    env_var_name: str, operating_system: OperatingSystem
+) -> Optional[Tuple[str, str]]:
+    whl_path = os.getenv(env_var_name)
+
+    if not whl_path:
+        return None
+
+    LOG.info(f"Using {env_var_name} whl file: {whl_path}")
+    resolved_whl_paths = glob.glob(whl_path)
+    assert (
+        len(resolved_whl_paths) == 1
+    ), f"Expected exactly one {env_var_name} whl path, but got {resolved_whl_paths} (from pattern {whl_path})"
+    resolved_whl_path = resolved_whl_paths[0]
+
+    if operating_system.is_amazon_linux():
+        dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
+    elif operating_system.is_windows():
+        dest_path = posixpath.join(
+            "C:\\Windows\\System32\\Config\\systemprofile\\AppData\\Local\\Temp",
+            os.path.basename(resolved_whl_path),
+        )
+    else:
+        raise NotImplementedError(f"Unsupported operating system: {operating_system.name}")
+
+    LOG.info(f"The {env_var_name} whl file will be copied to {dest_path} on the Worker environment")
+    return (resolved_whl_path, dest_path)
+
+
 @pytest.fixture(scope="session")
 def worker_config(
     deadline_resources: DeadlineResources,
@@ -413,6 +442,7 @@ def worker_config(
     Builds the configuration for a DeadlineWorker.
 
     Environment Variables:
+        DEADLINE_WHL_PATH: Path to the deadline wheel file to use.
         OPENJD_SESSIONS_WHL_PATH: Path to the openjd-sessions wheel file to use.
         WORKER_POSIX_USER: The POSIX user to configure the worker for
             Defaults to "deadline-worker"
@@ -438,29 +468,10 @@ def worker_config(
     pip_install_requirement_specifiers: list[str] = []
 
     # Prepare the Worker agent Python package
-    worker_agent_whl_path = os.getenv("WORKER_AGENT_WHL_PATH")
-    if worker_agent_whl_path:
-        LOG.info(f"Using Worker agent whl file: {worker_agent_whl_path}")
-        resolved_whl_paths = glob.glob(worker_agent_whl_path)
-        assert (
-            len(resolved_whl_paths) == 1
-        ), f"Expected exactly one Worker agent whl path, but got {resolved_whl_paths} (from pattern {worker_agent_whl_path})"
-        resolved_whl_path = resolved_whl_paths[0]
-
-        if operating_system.is_amazon_linux():
-            dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
-        elif operating_system.is_windows():
-            dest_path = posixpath.join(
-                "C:\\Windows\\System32\\Config\\systemprofile\\AppData\\Local\\Temp",
-                os.path.basename(resolved_whl_path),
-            )
-        else:
-            raise NotImplementedError(f"Unsupported operating system: {operating_system.name}")
-        file_mappings = [(resolved_whl_path, dest_path)]
-
-        LOG.info(
-            f"The worker agent whl file will be copied to {dest_path} on the Worker environment"
-        )
+    worker_agent_whl_paths = _get_resolved_dest_paths("WORKER_AGENT_WHL_PATH", operating_system)
+    if worker_agent_whl_paths:
+        _, dest_path = worker_agent_whl_paths
+        file_mappings.append(worker_agent_whl_paths)
         pip_install_requirement_specifiers.append(dest_path)
     else:
         worker_agent_requirement_specifier = os.getenv(
@@ -470,28 +481,20 @@ def worker_config(
         LOG.info(f"Using Worker agent package {worker_agent_requirement_specifier}")
         pip_install_requirement_specifiers.append(worker_agent_requirement_specifier)
 
-    openjd_sessions_whl_path = os.getenv("OPENJD_SESSIONS_WHL_PATH")
-    if openjd_sessions_whl_path:
-        LOG.info(f"Using openjd-sessions agent whl file: {openjd_sessions_whl_path}")
-        resolved_whl_paths = glob.glob(openjd_sessions_whl_path)
-        assert (
-            len(resolved_whl_paths) == 1
-        ), f"Expected exactly one openjd-sessions whl path, but got {resolved_whl_paths} (from pattern {openjd_sessions_whl_path})"
-        resolved_whl_path = resolved_whl_paths[0]
+    # Prepare the openjd Python package
+    openjd_sessions_whl_paths = _get_resolved_dest_paths(
+        "OPENJD_SESSIONS_WHL_PATH", operating_system
+    )
+    if openjd_sessions_whl_paths:
+        _, dest_path = openjd_sessions_whl_paths
+        file_mappings.append(openjd_sessions_whl_paths)
+        pip_install_requirement_specifiers.append(dest_path)
 
-        if operating_system.is_amazon_linux():
-            dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
-        elif operating_system.is_windows():
-            dest_path = posixpath.join(
-                "C:\\Windows\\System32\\Config\\systemprofile\\AppData\\Local\\Temp",
-                os.path.basename(resolved_whl_path),
-            )
-        else:
-            raise NotImplementedError(f"Unsupported operating system: {operating_system.name}")
-        file_mappings.append((resolved_whl_path, dest_path))
-        LOG.info(
-            f"The openjd-sessions whl file will be copied to {dest_path} on the Worker environment"
-        )
+    # Prepare the deadline-cloud Python package
+    deadline_whl_paths = _get_resolved_dest_paths("DEADLINE_WHL_PATH", operating_system)
+    if deadline_whl_paths:
+        _, dest_path = deadline_whl_paths
+        file_mappings.append(deadline_whl_paths)
         pip_install_requirement_specifiers.append(dest_path)
 
     # Path map the service model

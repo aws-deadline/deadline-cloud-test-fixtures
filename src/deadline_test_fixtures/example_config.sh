@@ -46,6 +46,10 @@ export WORKER_AGENT_WHL_PATH
 # Default is to pip install the latest openjd-sessions package
 export OPENJD_SESSIONS_WHL_PATH
 
+# Local path to the deadline .whl file to use for the tests
+# Default is to pip install the latest deadline-cloud package
+export DEADLINE_WHL_PATH
+
 # DEPRECATED: Use REGION instead
 # The AWS region to configure the worker for
 # Falls back to AWS_DEFAULT_REGION, then defaults to us-west-2
