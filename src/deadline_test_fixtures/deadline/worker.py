@@ -409,7 +409,7 @@ class EC2InstanceWorker(DeadlineWorker):
         instance_running_waiter = self.ec2_client.get_waiter("instance_status_ok")
         instance_running_waiter.wait(
             InstanceIds=[self.instance_id],
-            WaiterConfig={"Delay": 15, "MaxAttempts": 60},
+            WaiterConfig={"Delay": 15, "MaxAttempts": 75},
         )
         LOG.info(f"EC2 instance {self.instance_id} status is OK")
 
