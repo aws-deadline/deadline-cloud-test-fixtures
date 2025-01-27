@@ -1,3 +1,10 @@
+## 0.17.4 (2025-01-27)
+
+
+### Features
+* ability to supply deadline Python wheel (#174) ([`13662a4`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/13662a4c2b567ccae24acd758b20657824d1f79c))
+
+
 ## 0.17.3 (2025-01-09)
 
 
