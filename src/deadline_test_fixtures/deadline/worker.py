@@ -698,7 +698,7 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
         cmds.extend(
             [
                 "mkdir -p /etc/systemd/system/deadline-worker.service.d/",
-                'echo "[Service]" > /etc/systemd/system/deadline-worker.service.d/config.conf',
+                'echo "[Service]" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
                 # Configure the region
                 f'echo "Environment=AWS_REGION={config.region}" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
                 f'echo "Environment=AWS_DEFAULT_REGION={config.region}" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
