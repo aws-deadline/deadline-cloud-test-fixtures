@@ -26,6 +26,8 @@ from .deadline import (
 from .fixtures import (
     BootstrapResources,
     DeadlineResources,
+    InstallPathResources,
+    InstanceConfig,
     bootstrap_resources,
     codeartifact,
     deadline_client,
@@ -61,6 +63,8 @@ __all__ = [
     "EC2InstanceWorker",
     "Farm",
     "Fleet",
+    "InstallPathResources",
+    "InstanceConfig",
     "Job",
     "JobAttachmentManager",
     "JobAttachmentSettings",

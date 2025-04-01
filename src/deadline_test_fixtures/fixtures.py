@@ -136,6 +136,26 @@ class DeadlineResources:
         object.__setattr__(self, "fleet", Fleet(id=fleet_id, farm=self.farm))
 
 
+@dataclass(frozen=True)
+class InstallPathResources:
+    dst_path: str = ""
+    pip_install_requirements: list[str] = field(default_factory=list)
+    file_mappings: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class InstanceConfig:
+    ami_id: str | None
+    subnet_id: str
+    security_group_id: str
+    bootstrap_resources: BootstrapResources
+    s3_client: botocore.client.BaseClient
+    ec2_client: botocore.client.BaseClient
+    ssm_client: botocore.client.BaseClient
+    instance_type: str = field(default="t3.micro")
+    instance_shutdown_behavior: str = field(default="stop")
+
+
 @pytest.fixture(scope="session")
 def deadline_client(
     # Explicitly request fixture since pytest.mark.usefixtures doesn't work on fixtures
@@ -431,31 +451,22 @@ def _get_resolved_dest_paths(
 
 
 @pytest.fixture(scope="session")
-def worker_config(
-    deadline_resources: DeadlineResources,
-    codeartifact: CodeArtifactRepositoryInfo,
+def install_path_config(
     service_model: ServiceModel,
-    region: str,
     operating_system: OperatingSystem,
-) -> Generator[DeadlineWorkerConfiguration, None, None]:
+) -> Generator[InstallPathResources, None, None]:
     """
-    Builds the configuration for a DeadlineWorker.
+    Builds the worker agent pathing for install.
 
     Environment Variables:
         DEADLINE_WHL_PATH: Path to the deadline wheel file to use.
         OPENJD_SESSIONS_WHL_PATH: Path to the openjd-sessions wheel file to use.
-        WORKER_POSIX_USER: The POSIX user to configure the worker for
-            Defaults to "deadline-worker"
-        WORKER_POSIX_SHARED_GROUP: The shared POSIX group to configure the worker user and job user with
-            Defaults to "shared-group"
         WORKER_AGENT_WHL_PATH: Path to the Worker agent wheel file to use.
         WORKER_AGENT_REQUIREMENT_SPECIFIER: PEP 508 requirement specifier for the Worker agent package.
             If WORKER_AGENT_WHL_PATH is provided, this option is ignored.
-        LOCAL_MODEL_PATH: Path to a local Deadline model file to use for API calls.
-            If DEADLINE_SERVICE_MODEL_S3_URI was provided, this option is ignored.
 
     Returns:
-        DeadlineWorkerConfiguration: Configuration for use by DeadlineWorker.
+        InstallPathResources: The pathing required for installing the worker-agent
     """
     file_mappings: list[tuple[str, str]] = []
 
@@ -516,18 +527,93 @@ def worker_config(
         LOG.info(f"The service model will be copied to {dst_path} on the Worker environment")
         file_mappings.append((str(src_path), dst_path))
 
-        yield DeadlineWorkerConfiguration(
-            farm_id=deadline_resources.farm.id,
-            fleet=deadline_resources.fleet,
-            region=region,
-            allow_shutdown=True,
-            worker_agent_install=PipInstall(
-                requirement_specifiers=pip_install_requirement_specifiers,
-                codeartifact=codeartifact,
-            ),
-            service_model_path=dst_path,
-            file_mappings=file_mappings or None,
+        yield InstallPathResources(
+            dst_path=dst_path,
+            file_mappings=file_mappings,
+            pip_install_requirements=pip_install_requirement_specifiers,
         )
+
+
+@pytest.fixture(scope="session")
+def worker_config(
+    deadline_resources: DeadlineResources,
+    codeartifact: CodeArtifactRepositoryInfo,
+    region: str,
+    install_path_config: InstallPathResources,
+) -> Generator[DeadlineWorkerConfiguration, None, None]:
+    """
+    Builds the configuration for a DeadlineWorker.
+
+    Returns:
+        DeadlineWorkerConfiguration: Configuration for use by DeadlineWorker.
+    """
+
+    yield DeadlineWorkerConfiguration(
+        farm_id=deadline_resources.farm.id,
+        fleet=deadline_resources.fleet,
+        region=region,
+        allow_shutdown=True,
+        worker_agent_install=PipInstall(
+            requirement_specifiers=install_path_config.pip_install_requirements,
+            codeartifact=codeartifact,
+        ),
+        service_model_path=install_path_config.dst_path,
+        file_mappings=install_path_config.file_mappings or None,
+    )
+
+
+@pytest.fixture(scope="session")
+def instance_config(
+    request: pytest.FixtureRequest,
+) -> Generator[InstanceConfig, None, None]:
+    """
+    Builds the base instance configuration
+
+    Environment Variables:
+        AMI_ID: The AMI ID to use for the Worker agent.
+            Defaults to the latest AL2023 AMI.
+        SUBNET_ID: The subnet ID to deploy the EC2 worker into.
+            This is required for EC2 workers. Does not apply if USE_DOCKER_WORKER is true.
+        SECURITY_GROUP_ID: The security group ID to deploy the EC2 worker into.
+            This is required for EC2 workers. Does not apply if USE_DOCKER_WORKER is true.
+        WORKER_INSTANCE_TYPE: The EC2 instance type to use for the Worker agent.
+            Defaults to "t3.micro".
+        WORKER_INSTANCE_SHUTDOWN_BEHAVIOR: The EC2 instance shutdown behavior to use for the Worker agent.
+            Defaults to "stop".
+
+    Returns:
+        InstanceConfig: Configuration for deploying the EC2 Instance
+    """
+    LOG.info("Creating EC2 worker")
+    ami_id = os.getenv("AMI_ID")
+    subnet_id = os.getenv("SUBNET_ID")
+    security_group_id = os.getenv("SECURITY_GROUP_ID")
+    instance_type = os.getenv("WORKER_INSTANCE_TYPE", default="t3.micro")
+    instance_shutdown_behavior = os.getenv("WORKER_INSTANCE_SHUTDOWN_BEHAVIOR", default="stop")
+
+    assert subnet_id, "SUBNET_ID is required when deploying an EC2 worker"
+    assert security_group_id, "SECURITY_GROUP_ID is required when deploying an EC2 worker"
+
+    bootstrap_resources: BootstrapResources = request.getfixturevalue("bootstrap_resources")
+    assert (
+        bootstrap_resources.worker_instance_profile_name
+    ), "Worker instance profile is required when deploying an EC2 worker"
+
+    ec2_client = boto3.client("ec2")
+    s3_client = boto3.client("s3")
+    ssm_client = boto3.client("ssm")
+
+    yield InstanceConfig(
+        ami_id=ami_id,
+        subnet_id=subnet_id,
+        security_group_id=security_group_id,
+        bootstrap_resources=bootstrap_resources,
+        ec2_client=ec2_client,
+        s3_client=s3_client,
+        ssm_client=ssm_client,
+        instance_type=instance_type,
+        instance_shutdown_behavior=instance_shutdown_behavior,
+    )
 
 
 @pytest.fixture(scope="session")
@@ -550,6 +636,7 @@ def worker(
     request: pytest.FixtureRequest,
     worker_config: DeadlineWorkerConfiguration,
     ec2_worker_type: Type[EC2InstanceWorker],
+    deadline_client: DeadlineClient,
 ) -> Generator[DeadlineWorker, None, None]:
     """
     Gets a DeadlineWorker for use in tests.
@@ -577,38 +664,24 @@ def worker(
         )
     else:
         LOG.info("Creating EC2 worker")
-        ami_id = os.getenv("AMI_ID")
-        subnet_id = os.getenv("SUBNET_ID")
-        security_group_id = os.getenv("SECURITY_GROUP_ID")
-        instance_type = os.getenv("WORKER_INSTANCE_TYPE", default="t3.micro")
-        instance_shutdown_behavior = os.getenv("WORKER_INSTANCE_SHUTDOWN_BEHAVIOR", default="stop")
+        base_instance_config: InstanceConfig = next(instance_config(request=request))
 
-        assert subnet_id, "SUBNET_ID is required when deploying an EC2 worker"
-        assert security_group_id, "SECURITY_GROUP_ID is required when deploying an EC2 worker"
-
-        bootstrap_resources: BootstrapResources = request.getfixturevalue("bootstrap_resources")
-        assert (
-            bootstrap_resources.worker_instance_profile_name
-        ), "Worker instance profile is required when deploying an EC2 worker"
-
-        ec2_client = boto3.client("ec2")
-        s3_client = boto3.client("s3")
-        ssm_client = boto3.client("ssm")
-        deadline_client = boto3.client("deadline")
+        instance_name = base_instance_config.bootstrap_resources.worker_instance_profile_name
+        assert instance_name, "Instance name required for deploying test EC2 instance"
 
         worker = ec2_worker_type(
-            ec2_client=ec2_client,
-            s3_client=s3_client,
+            ec2_client=base_instance_config.ec2_client,
+            s3_client=base_instance_config.s3_client,
             deadline_client=deadline_client,
-            bootstrap_bucket_name=bootstrap_resources.bootstrap_bucket_name,
-            ssm_client=ssm_client,
-            override_ami_id=ami_id,
-            subnet_id=subnet_id,
-            security_group_id=security_group_id,
-            instance_profile_name=bootstrap_resources.worker_instance_profile_name,
+            bootstrap_bucket_name=base_instance_config.bootstrap_resources.bootstrap_bucket_name,
+            ssm_client=base_instance_config.ssm_client,
+            override_ami_id=base_instance_config.ami_id,
+            subnet_id=base_instance_config.subnet_id,
+            security_group_id=base_instance_config.security_group_id,
+            instance_profile_name=instance_name,
             configuration=worker_config,
-            instance_type=instance_type,
-            instance_shutdown_behavior=instance_shutdown_behavior,
+            instance_type=base_instance_config.instance_type,
+            instance_shutdown_behavior=base_instance_config.instance_shutdown_behavior,
         )
 
     def stop_worker():

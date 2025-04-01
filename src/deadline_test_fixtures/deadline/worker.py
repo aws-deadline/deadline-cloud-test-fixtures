@@ -189,6 +189,10 @@ class EC2InstanceWorker(DeadlineWorker):
         self._launch_instance(s3_files=s3_files)
         self._start_worker_agent()
 
+    def no_install_start(self) -> None:
+        s3_files = self._stage_s3_bucket()
+        self._launch_instance(s3_files=s3_files)
+
     def stop(self) -> None:
         LOG.info(f"Terminating EC2 instance {self.instance_id}")
         self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
