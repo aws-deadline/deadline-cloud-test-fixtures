@@ -16,14 +16,17 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field, InitVar, replace
-from typing import Any, ClassVar, Optional, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, cast
 
 from ..models import (
     PipInstall,
     PosixSessionUser,
 )
-from .resources import Fleet
+from .resources import CloudWatchLogEvent, Fleet, WorkerLog
 from ..util import call_api, wait_for
+
+if TYPE_CHECKING:
+    from botocore.paginate import PageIterator, Paginator
 
 LOG = logging.getLogger(__name__)
 
@@ -46,6 +49,15 @@ class DeadlineWorker(abc.ABC):
     @abc.abstractmethod
     def get_worker_id(self) -> str:
         pass
+
+
+@dataclass(frozen=True)
+class WorkerLogConfig:
+    cloudwatch_log_group: str
+    """The name of the CloudWatch Log Group that the Agent log should be streamed to"""
+
+    cloudwatch_log_stream: str
+    """The name of the CloudWatch Log Stream that the Agent log should be streamed to"""
 
 
 @dataclass(frozen=True)
@@ -251,6 +263,46 @@ class EC2InstanceWorker(DeadlineWorker):
         except botocore.exceptions.ClientError as error:
             LOG.exception(f"Failed to update worker status: {error}")
             raise
+
+    def _get_worker_logs(self) -> Optional[WorkerLogConfig]:
+        """Get the log group and log stream for the worker. Retain the API structure"""
+        response = self.deadline_client.get_worker(
+            farmId=self.configuration.farm_id,
+            fleetId=self.configuration.fleet.id,
+            workerId=self.worker_id,
+        )
+        if log_config := response.get("log"):
+            LOG.info(f"Log Config structure {log_config}")
+            if log_config_options := log_config.get("options"):
+                log_group_name = log_config_options.get("logGroupName")
+                log_stream_name = log_config_options.get("logStreamName")
+                if log_group_name and log_stream_name:
+                    return WorkerLogConfig(
+                        cloudwatch_log_group=log_group_name, cloudwatch_log_stream=log_stream_name
+                    )
+        # Default, no log config yet.
+        return None
+
+    def get_logs(self, *, logs_client: botocore.client.BaseClient) -> WorkerLog:
+        # Get the worker log group and stream from the service.
+        log_config: Optional[WorkerLogConfig] = self._get_worker_logs()
+        if not log_config:
+            return WorkerLog(worker_id=self.worker_id, logs=[])  # type: ignore[arg-type]
+
+        filter_log_events_paginator: Paginator = logs_client.get_paginator("filter_log_events")
+        filter_log_events_pages: PageIterator = call_api(
+            description=f"Fetching log events for worker {self.worker_id} in log group {log_config.cloudwatch_log_group}",
+            fn=lambda: filter_log_events_paginator.paginate(
+                logGroupName=log_config.cloudwatch_log_group,
+                logStreamNames=[log_config.cloudwatch_log_stream],
+            ),
+        )
+        log_events = filter_log_events_pages.build_full_result()
+        log_events = [CloudWatchLogEvent.from_api_response(e) for e in log_events["events"]]
+        # For debugging test cases.
+        # LOG.info(log_events)
+
+        return WorkerLog(worker_id=self.worker_id, logs=log_events)  # type: ignore[arg-type]
 
     def send_command(self, command: str) -> CommandResult:
         """Send a command via SSM to a shell on a launched EC2 instance. Once the command has fully
