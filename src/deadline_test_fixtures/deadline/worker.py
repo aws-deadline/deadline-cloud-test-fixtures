@@ -32,6 +32,11 @@ LOG = logging.getLogger(__name__)
 
 DOCKER_CONTEXT_DIR = os.path.join(os.path.dirname(__file__), "..", "containers", "worker")
 
+DEFAULT_WAITER_CONFIG = {
+    "Delay": 5,
+    "MaxAttempts": 30,
+}
+
 
 class DeadlineWorker(abc.ABC):
     @abc.abstractmethod
@@ -304,7 +309,9 @@ class EC2InstanceWorker(DeadlineWorker):
 
         return WorkerLog(worker_id=self.worker_id, logs=log_events)  # type: ignore[arg-type]
 
-    def send_command(self, command: str) -> CommandResult:
+    def send_command(
+        self, command: str, ssm_waiter_config: dict[str, int] = DEFAULT_WAITER_CONFIG
+    ) -> CommandResult:
         """Send a command via SSM to a shell on a launched EC2 instance. Once the command has fully
         finished the result of the invocation is returned.
         """
@@ -345,7 +352,7 @@ class EC2InstanceWorker(DeadlineWorker):
             ssm_waiter.wait(
                 InstanceId=self.instance_id,
                 CommandId=command_id,
-                WaiterConfig={"Delay": 5, "MaxAttempts": 30},
+                WaiterConfig=ssm_waiter_config,
             )
         except botocore.exceptions.WaiterError:  # pragma: no cover
             # Swallow exception, we're going to check the result anyway
@@ -586,7 +593,8 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
                     "$worker=Get-Content -Raw C:\ProgramData\Amazon\Deadline\Cache\worker.json | ConvertFrom-Json",
                     "echo $worker.worker_id",
                 ]
-            )
+            ),
+            {"Delay": 5, "MaxAttempts": 36},
         )
         assert cmd_result.exit_code == 0, f"Failed to get Worker ID: {cmd_result}"
 
@@ -705,8 +713,10 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
     def ssm_document_name(self) -> str:
         return "AWS-RunShellScript"
 
-    def send_command(self, command: str) -> CommandResult:
-        return super().send_command("set -eou pipefail; " + command)
+    def send_command(
+        self, command: str, ssm_waiter_config: dict[str, int] = DEFAULT_WAITER_CONFIG
+    ) -> CommandResult:
+        return super().send_command("set -eou pipefail; " + command, ssm_waiter_config)
 
     def _start_worker_agent(self) -> None:
         assert self.instance_id
