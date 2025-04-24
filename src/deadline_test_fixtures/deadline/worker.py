@@ -214,7 +214,7 @@ class EC2InstanceWorker(DeadlineWorker):
 
         if not self.configuration.fleet.autoscaling:
             try:
-                self.wait_until_desired_worker_status(desired_status="STOPPED")
+                self.wait_until_stopped()
             except TimeoutError:
                 LOG.warning(
                     f"{self.worker_id} did not transition to a STOPPED status, forcibly stopping..."
@@ -238,6 +238,15 @@ class EC2InstanceWorker(DeadlineWorker):
         except botocore.exceptions.ClientError as error:
             LOG.exception(f"Failed to delete worker: {error}")
             raise
+
+    def wait_until_stopped(
+        self, *, max_checks: int = 25, seconds_between_checks: float = 5
+    ) -> None:
+        self.wait_until_desired_worker_status(
+            max_checks=max_checks,
+            seconds_between_checks=seconds_between_checks,
+            desired_status="STOPPED",
+        )
 
     def wait_until_desired_worker_status(
         self,
