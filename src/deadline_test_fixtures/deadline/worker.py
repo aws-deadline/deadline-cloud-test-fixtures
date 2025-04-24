@@ -238,13 +238,13 @@ class EC2InstanceWorker(DeadlineWorker):
         except botocore.exceptions.ClientError as error:
             LOG.exception(f"Failed to delete worker: {error}")
             raise
-        
+
     def wait_until_desired_worker_status(
-            self,
-            *,
-            max_checks: int = 25,
-            seconds_between_checks: float = 5,
-            desired_status: str = "STOPPED",
+        self,
+        *,
+        max_checks: int = 25,
+        seconds_between_checks: float = 5,
+        desired_status: str = "STOPPED",
     ) -> None:
         for _ in range(max_checks):
             response = self.deadline_client.get_worker(
