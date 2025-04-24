@@ -1,3 +1,11 @@
+## 0.17.5 (2025-04-04)
+
+
+### Features
+* Add support to fetch and match worker logs (#183) ([`b920331`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/b9203319b189cd957543c78549df5c1d0ee7d4e0))
+* append additional configuration to deadline-worker systemd config during linux worker setup (#181) ([`13d60e1`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/13d60e1d504c72d6df6629b5e2948f0bfc10408f))
+
+
 ## 0.17.4 (2025-01-27)
 
 

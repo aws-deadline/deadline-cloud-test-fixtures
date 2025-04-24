@@ -1288,8 +1288,7 @@ class Session:
 
 
 @dataclass
-class SessionLog:
-    session_id: str
+class CloudWatchLogs:
     logs: list[CloudWatchLogEvent]
 
     def assert_pattern_in_log(
@@ -1365,3 +1364,13 @@ class CloudWatchLogEvent:
             message=response["message"],
             timestamp=response["timestamp"],
         )
+
+
+@dataclass
+class SessionLog(CloudWatchLogs):
+    session_id: str
+
+
+@dataclass
+class WorkerLog(CloudWatchLogs):
+    worker_id: str

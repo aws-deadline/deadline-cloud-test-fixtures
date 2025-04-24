@@ -23,6 +23,7 @@ from .resources import (
     Task,
     TaskParameterValue,
     TaskStatus,
+    WorkerLog,
 )
 from .worker import (
     CommandResult,
@@ -70,4 +71,5 @@ __all__ = [
     "TaskStatus",
     "WindowsInstanceBuildWorker",
     "WindowsInstanceWorkerBase",
+    "WorkerLog",
 ]
