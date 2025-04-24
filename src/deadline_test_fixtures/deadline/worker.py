@@ -214,7 +214,7 @@ class EC2InstanceWorker(DeadlineWorker):
 
         if not self.configuration.fleet.autoscaling:
             try:
-                self.wait_until_stopped()
+                self.wait_until_desired_worker_status(desired_status="STOPPED")
             except TimeoutError:
                 LOG.warning(
                     f"{self.worker_id} did not transition to a STOPPED status, forcibly stopping..."
@@ -238,9 +238,13 @@ class EC2InstanceWorker(DeadlineWorker):
         except botocore.exceptions.ClientError as error:
             LOG.exception(f"Failed to delete worker: {error}")
             raise
-
-    def wait_until_stopped(
-        self, *, max_checks: int = 25, seconds_between_checks: float = 5
+        
+    def wait_until_desired_worker_status(
+            self,
+            *,
+            max_checks: int = 25,
+            seconds_between_checks: float = 5,
+            desired_status: str = "STOPPED",
     ) -> None:
         for _ in range(max_checks):
             response = self.deadline_client.get_worker(
@@ -248,28 +252,11 @@ class EC2InstanceWorker(DeadlineWorker):
                 fleetId=self.configuration.fleet.id,
                 workerId=self.worker_id,
             )
-            if response["status"] == "STOPPED":
-                LOG.info(f"{self.worker_id} is STOPPED")
+            if response["status"] == desired_status:
+                LOG.info(f"{self.worker_id} is {desired_status}")
                 break
             time.sleep(seconds_between_checks)
-            LOG.info(f"Waiting for {self.worker_id} to transition to STOPPED status")
-        else:
-            raise TimeoutError
-
-    def wait_until_worker_stopping(
-        self, *, max_checks: int = 25, seconds_between_checks: float = 5
-    ) -> None:
-        for _ in range(max_checks):
-            response = self.deadline_client.get_worker(
-                farmId=self.configuration.farm_id,
-                fleetId=self.configuration.fleet.id,
-                workerId=self.worker_id,
-            )
-            if response["status"] == "STOPPING":
-                LOG.info(f"{self.worker_id} is STOPPING")
-                break
-            time.sleep(seconds_between_checks)
-            LOG.info(f"Waiting for {self.worker_id} to transition to STOPPING status")
+            LOG.info(f"Waiting for {self.worker_id} to transition to {desired_status} status")
         else:
             raise TimeoutError
 
