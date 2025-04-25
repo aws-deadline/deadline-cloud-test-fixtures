@@ -120,6 +120,7 @@ class DeadlineWorkerConfiguration:
 
     job_user: str = field(default="job-user")
     agent_user: str = field(default="deadline-worker")
+    windows_user_secret: str | None = None
     job_user_group: str = field(default="deadline-job-users")
 
     job_users: list[PosixSessionUser] = field(
@@ -171,8 +172,8 @@ class EC2InstanceWorker(DeadlineWorker):
         raise NotImplementedError("'ssm_document_name' was not implemented.")
 
     @abc.abstractmethod
-    def _start_worker_agent(self) -> None:  # pragma: no cover
-        raise NotImplementedError("'_start_worker_agent' was not implemented.")
+    def _setup_worker_agent(self) -> None:  # pragma: no cover
+        raise NotImplementedError("'_setup_worker_agent' was not implemented.")
 
     @abc.abstractmethod
     def configure_worker_command(
@@ -204,7 +205,7 @@ class EC2InstanceWorker(DeadlineWorker):
     def start(self) -> None:
         s3_files = self._stage_s3_bucket()
         self._launch_instance(s3_files=s3_files)
-        self._start_worker_agent()
+        self._setup_worker_agent()
 
     def stop(self) -> None:
         LOG.info(f"Terminating EC2 instance {self.instance_id}")
@@ -522,7 +523,7 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
     def ssm_document_name(self) -> str:
         return "AWS-RunPowerShellScript"
 
-    def _start_worker_agent(self) -> None:
+    def _setup_worker_agent(self) -> None:
         assert self.instance_id
         LOG.info(f"Sending SSM command to configure Worker agent on instance {self.instance_id}")
 
@@ -533,7 +534,9 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
         LOG.info("Successfully configured Worker agent")
 
         if self.configuration.start_service:
-            LOG.info(f"Sending SSM command to start Worker agent on instance {self.instance_id}")
+            LOG.info(
+                f"Sending SSM command to start Windows Worker agent on instance {self.instance_id}"
+            )
             self.start_worker_service()
             LOG.info("Successfully started Worker agent")
 
@@ -578,7 +581,7 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
         return "; ".join(cmds)
 
     def start_worker_service(self):
-        LOG.info("Sending command to start the Worker Agent service - Added comma")
+        LOG.info("Sending command to start the Worker Agent service")
 
         cmd_result = self.send_command(
             " ; ".join(
@@ -586,7 +589,7 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
                     'Start-Service -Name "DeadlineWorker"',
                     "echo 'Running Get-Process to check if the agent is running'",
                     'for($i=1; $i -le 30 -and "" -ne $err ; $i++){sleep $i; Get-Process pythonservice -ErrorVariable err}',
-                    "IF(Get-Process pythonservice){echo '+++SERVICE IS RUNNING+++'}ELSE{echo '+++SERVICE NOT RUNNING+++'; Get-Content -Encoding utf8 C:\ProgramData\Amazon\Deadline\Logs\worker-agent-bootstrap.log,C:\ProgramData\Amazon\Deadline\Logs\worker-agent.log; exit 1}",
+                    "IF(Get-Process pythonservice){echo '+++SERVICE IS RUNNING+++'}ELSE{echo '+++SERVICE NOT RUNNING+++'; Get-Content -Encoding utf8 C:\\ProgramData\\Amazon\\Deadline\\Logs\\worker-agent-bootstrap.log,C:\\ProgramData\\Amazon\\Deadline\\Logs\\worker-agent.log; exit 1}",
                 ]
             ),
         )
@@ -606,8 +609,8 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
         cmd_result = self.send_command(
             " ; ".join(
                 [
-                    'for($i=1; $i -le 20 -and "" -ne $err ; $i++){sleep $i; Get-Item C:\ProgramData\Amazon\Deadline\Cache\worker.json -ErrorVariable err 1>$null}',
-                    "$worker=Get-Content -Raw C:\ProgramData\Amazon\Deadline\Cache\worker.json | ConvertFrom-Json",
+                    'for($i=1; $i -le 20 -and "" -ne $err ; $i++){sleep $i; Get-Item C:\\ProgramData\\Amazon\\Deadline\\Cache\\worker.json -ErrorVariable err 1>$null}',
+                    "$worker=Get-Content -Raw C:\\ProgramData\\Amazon\\Deadline\\Cache\\worker.json | ConvertFrom-Json",
                     "echo $worker.worker_id",
                 ]
             ),
@@ -623,6 +626,20 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
         LOG.info(f"Obtained Worker ID: {worker_id}")
         return worker_id
 
+    def get_windows_user_secret(self, secret_id: str) -> CommandResult:
+        """
+        Retrieves a secret from AWS Secrets Manager.
+        """
+        cmd = (
+            f"aws secretsmanager get-secret-value "
+            f"--secret-id {secret_id} "
+            "--query SecretString --output text "
+        )
+        result = self.send_command(cmd)
+        if result.exit_code != 0:
+            raise Exception(f"Failed to get secret: {result.stderr}")
+        return result
+
 
 @dataclass
 class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
@@ -635,6 +652,13 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
 
     def configure_worker_command(self, *, config: DeadlineWorkerConfiguration) -> str:
         """Get the command to configure the Worker. This must be run as Administrator."""
+
+        password = None
+        if config.windows_user_secret:
+            user_secret = self.get_windows_user_secret(secret_id=config.windows_user_secret)
+            secret_json = json.loads(user_secret.stdout)
+            password = secret_json["password"]
+        
         cmds = [
             "Set-PSDebug -trace 1",
             self.configure_worker_common(config=config),
@@ -648,6 +672,7 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
                 + f"--fleet-id {config.fleet.id} "
                 + f"--region {config.region} "
                 + f"--user {config.agent_user} "
+                + (f"--password {password} " if password is not None else "")
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
                 + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
                 + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
@@ -688,13 +713,13 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
 
         userdata = f"""<powershell>
 $ProgressPreference = 'SilentlyContinue'
-Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe" -OutFile "C:\python-3.12.9-amd64.exe"
-$installerHash=(Get-FileHash "C:\python-3.12.9-amd64.exe" -Algorithm "MD5")
+Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe" -OutFile "C:\\python-3.12.9-amd64.exe"
+$installerHash=(Get-FileHash "C:\\python-3.12.9-amd64.exe" -Algorithm "MD5")
 $expectedHash="1cfb1bbf96007b12b98db895dcd86487"
 if ($installerHash.Hash -ne $expectedHash) {{ throw "Could not verify Python installer." }}
-Start-Process -FilePath "C:\python-3.12.9-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
-Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\AWSCLIV2.msi"
-Start-Process msiexec.exe -ArgumentList "/i C:\AWSCLIV2.msi /quiet" -Wait
+Start-Process -FilePath "C:\\python-3.12.9-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
+Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\\AWSCLIV2.msi"
+Start-Process msiexec.exe -ArgumentList "/i C:\\AWSCLIV2.msi /quiet" -Wait
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
 $secret = aws secretsmanager get-secret-value --secret-id WindowsPasswordSecret --query SecretString --output text | ConvertFrom-Json
 $password = ConvertTo-SecureString -String $($secret.password) -AsPlainText -Force
@@ -737,7 +762,7 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
     ) -> CommandResult:
         return super().send_command("set -eou pipefail; " + command, ssm_waiter_config)
 
-    def _start_worker_agent(self) -> None:
+    def _setup_worker_agent(self) -> None:
         assert self.instance_id
         LOG.info(
             f"Starting worker for farm: {self.configuration.farm_id} and fleet: {self.configuration.fleet.id}"
