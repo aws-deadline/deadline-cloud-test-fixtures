@@ -658,7 +658,7 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
             user_secret = self.get_windows_user_secret(secret_id=config.windows_user_secret)
             secret_json = json.loads(user_secret.stdout)
             password = secret_json["password"]
-        
+
         cmds = [
             "Set-PSDebug -trace 1",
             self.configure_worker_common(config=config),
