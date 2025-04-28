@@ -662,30 +662,21 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
             self.configure_worker_common(config=config),
             config.worker_agent_install.install_command_for_windows,
             *(config.pre_install_commands or []),
+            # fmt: off
+            (
+                "install-deadline-worker "
+                + "-y "
+                + f"--farm-id {config.farm_id} "
+                + f"--fleet-id {config.fleet.id} "
+                + f"--region {config.region} "
+                + f"--user {config.agent_user} "
+                + (f"--password $({self.get_windows_user_secret_cmd(secret_id=config.windows_user_secret)}) " if config.windows_user_secret else "")
+                + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
+                + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
+                + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
+            ),
+            # fmt: on
         ]
-
-        if config.windows_user_secret:
-            cmds.append(
-                f"$workerPassword = {self.get_windows_user_secret_cmd(secret_id=config.windows_user_secret)}; "
-            )
-            password_param = "--password $workerPassword"
-        else:
-            password_param = ""
-
-        # fmt: off
-        cmds.append(
-            "install-deadline-worker "
-            + "-y "
-            + f"--farm-id {config.farm_id} "
-            + f"--fleet-id {config.fleet.id} "
-            + f"--region {config.region} "
-            + f"--user {config.agent_user} "
-            + f"{password_param} "
-            + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
-            + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
-            + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
-        )
-        # fmt: on
 
         if config.service_model_path:
             cmds.append(
