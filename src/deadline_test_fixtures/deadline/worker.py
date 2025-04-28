@@ -626,19 +626,23 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
         LOG.info(f"Obtained Worker ID: {worker_id}")
         return worker_id
 
-    def get_windows_user_secret(self, secret_id: str) -> CommandResult:
+    def get_windows_user_secret_cmd(self, secret_id: str) -> str:
         """
-        Retrieves a secret from AWS Secrets Manager.
+        Returns a PowerShell command string that will retrieve and use the secret on the worker instance itself.
+
+        Args:
+            secret_id: The ID of the secret in Secrets Manager
+
+        Returns:
+            str: PowerShell command to fetch and extract the password from the secret
         """
-        cmd = (
-            f"aws secretsmanager get-secret-value "
+        return (
+            "aws secretsmanager get-secret-value "
             f"--secret-id {secret_id} "
-            "--query SecretString --output text "
+            "--query 'SecretString' --output text | "
+            "ConvertFrom-Json | "
+            "Select-Object -ExpandProperty password"
         )
-        result = self.send_command(cmd)
-        if result.exit_code != 0:
-            raise Exception(f"Failed to get secret: {result.stderr}")
-        return result
 
 
 @dataclass
@@ -653,32 +657,35 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
     def configure_worker_command(self, *, config: DeadlineWorkerConfiguration) -> str:
         """Get the command to configure the Worker. This must be run as Administrator."""
 
-        password = None
-        if config.windows_user_secret:
-            user_secret = self.get_windows_user_secret(secret_id=config.windows_user_secret)
-            secret_json = json.loads(user_secret.stdout)
-            password = secret_json["password"]
-
         cmds = [
             "Set-PSDebug -trace 1",
             self.configure_worker_common(config=config),
             config.worker_agent_install.install_command_for_windows,
             *(config.pre_install_commands or []),
-            # fmt: off
-            (
-                "install-deadline-worker "
-                + "-y "
-                + f"--farm-id {config.farm_id} "
-                + f"--fleet-id {config.fleet.id} "
-                + f"--region {config.region} "
-                + f"--user {config.agent_user} "
-                + (f"--password {password} " if password is not None else "")
-                + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
-                + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
-                + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
-            ),
-            # fmt: on
         ]
+
+        if config.windows_user_secret:
+            cmds.append(
+                f"$workerPassword = {self.get_windows_user_secret_cmd(secret_id=config.windows_user_secret)}; "
+            )
+            password_param = "--password $workerPassword"
+        else:
+            password_param = ""
+
+        # fmt: off
+        cmds.append(
+            "install-deadline-worker "
+            + "-y "
+            + f"--farm-id {config.farm_id} "
+            + f"--fleet-id {config.fleet.id} "
+            + f"--region {config.region} "
+            + f"--user {config.agent_user} "
+            + f"{password_param} "
+            + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
+            + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
+            + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
+        )
+        # fmt: on
 
         if config.service_model_path:
             cmds.append(
