@@ -173,7 +173,7 @@ class TestPosixInstanceBuildWorker:
         with (
             patch.object(worker, "_stage_s3_bucket", return_value=s3_files) as mock_stage_s3_bucket,
             patch.object(worker, "_launch_instance") as mock_launch_instance,
-            patch.object(worker, "_start_worker_agent") as mock_start_worker_agent,
+            patch.object(worker, "_setup_worker_agent") as mock_setup_worker_agent,
             patch.object(
                 worker,
                 "get_worker_id",
@@ -189,7 +189,7 @@ class TestPosixInstanceBuildWorker:
         # Detailed testing for each of these is done in dedicated test methods
         mock_stage_s3_bucket.assert_called_once()
         mock_launch_instance.assert_called_once_with(s3_files=s3_files)
-        mock_start_worker_agent.assert_called_once()
+        mock_setup_worker_agent.assert_called_once()
 
     def test_stage_s3_bucket(
         self,
@@ -245,7 +245,7 @@ class TestPosixInstanceBuildWorker:
     @pytest.mark.skip(
         "There's nothing to test in this method currently since it's just sending SSM commands"
     )
-    def test_start_worker_agent(self) -> None:
+    def test_setup_worker_agent(self) -> None:
         pass
 
     def test_stop(self, worker: PosixInstanceBuildWorker) -> None:
