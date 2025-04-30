@@ -1,3 +1,11 @@
+## 0.17.6 (2025-04-30)
+
+
+### Features
+* Allow providing agent user credentials as a secrets manager secret (#187) ([`e49691c`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/e49691cd80d0c09a2bd949f9dac00362b9c3e387))
+* Add configurable timeout lengths to send_command ([`18c533b`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/18c533b79d9c4ae79fdd6b12713f5d86285f9798))
+
+
 ## 0.17.5 (2025-04-04)
 
 
