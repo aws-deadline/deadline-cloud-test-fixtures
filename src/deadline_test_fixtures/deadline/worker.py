@@ -99,6 +99,31 @@ class CommandResult:  # pragma: no cover
         )
 
 
+class InstanceStartupError(Exception):
+    """Custom exception for instance startup failures with diagnostics."""
+
+    def __init__(self, message, diagnostics=None):
+        self.message = message
+        self.diagnostics = diagnostics
+
+        # Format a more visually distinct error message with the diagnostics
+        error_msg = [
+            f"{message}",
+            "=" * 80,  # Separator line
+            "DIAGNOSTICS",
+            "=" * 80,  # Separator line
+        ]
+
+        if diagnostics:
+            error_msg.append(str(diagnostics))
+        else:
+            error_msg.append("No diagnostics available")
+
+        error_msg.append("=" * 80)  # Separator line
+
+        super().__init__("\n".join(error_msg))
+
+
 @dataclass(frozen=True)
 class DeadlineWorkerConfiguration:
     farm_id: str
@@ -212,6 +237,11 @@ class EC2InstanceWorker(DeadlineWorker):
         self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
 
         self.instance_id = None
+
+        # Only attempt worker-related cleanup if worker_id exists
+        if not self.worker_id:
+            LOG.info("No worker_id available, skipping worker cleanup")
+            return
 
         if not self.configuration.fleet.autoscaling:
             try:
@@ -428,63 +458,124 @@ class EC2InstanceWorker(DeadlineWorker):
         assert (
             not self.instance_id
         ), "Attempted to launch EC2 instance when one was already launched"
-
-        LOG.info("Launching EC2 instance")
-        LOG.info(
-            json.dumps(
-                {
-                    "AMI_ID": self.ami_id,
-                    "Instance Profile": self.instance_profile_name,
-                    "User Data": self.userdata(s3_files),
-                },
-                indent=4,
-                sort_keys=True,
+        try:
+            LOG.info("Launching EC2 instance")
+            LOG.info(
+                json.dumps(
+                    {
+                        "AMI_ID": self.ami_id,
+                        "Instance Profile": self.instance_profile_name,
+                        "User Data": self.userdata(s3_files),
+                    },
+                    indent=4,
+                    sort_keys=True,
+                )
             )
-        )
 
-        run_instance_request = {
-            "MinCount": 1,
-            "MaxCount": 1,
-            "ImageId": self.ami_id,
-            "InstanceType": self.instance_type,
-            "IamInstanceProfile": {"Name": self.instance_profile_name},
-            "SubnetId": self.subnet_id,
-            "SecurityGroupIds": [self.security_group_id],
-            "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"},
-            "TagSpecifications": [
-                {
-                    "ResourceType": "instance",
-                    "Tags": [
-                        {
-                            "Key": "InstanceIdentification",
-                            "Value": "DeadlineScaffoldingWorker",
-                        }
-                    ],
-                }
-            ],
-            "InstanceInitiatedShutdownBehavior": self.instance_shutdown_behavior,
-            "UserData": self.userdata(s3_files),
-        }
+            run_instance_request = {
+                "MinCount": 1,
+                "MaxCount": 1,
+                "ImageId": self.ami_id,
+                "InstanceType": self.instance_type,
+                "IamInstanceProfile": {"Name": self.instance_profile_name},
+                "SubnetId": self.subnet_id,
+                "SecurityGroupIds": [self.security_group_id],
+                "MetadataOptions": {"HttpTokens": "required", "HttpEndpoint": "enabled"},
+                "TagSpecifications": [
+                    {
+                        "ResourceType": "instance",
+                        "Tags": [
+                            {
+                                "Key": "InstanceIdentification",
+                                "Value": "DeadlineScaffoldingWorker",
+                            }
+                        ],
+                    }
+                ],
+                "InstanceInitiatedShutdownBehavior": self.instance_shutdown_behavior,
+                "UserData": self.userdata(s3_files),
+            }
 
-        devices = self.ebs_devices() or {}
-        device_mappings = [
-            {"DeviceName": name, "Ebs": {"VolumeSize": size}} for name, size in devices.items()
-        ]
-        if device_mappings:
-            run_instance_request["BlockDeviceMappings"] = device_mappings
+            devices = self.ebs_devices() or {}
+            device_mappings = [
+                {"DeviceName": name, "Ebs": {"VolumeSize": size}} for name, size in devices.items()
+            ]
+            if device_mappings:
+                run_instance_request["BlockDeviceMappings"] = device_mappings
 
-        run_instance_response = self.ec2_client.run_instances(**run_instance_request)
+            run_instance_response = self.ec2_client.run_instances(**run_instance_request)
 
-        self.instance_id = run_instance_response["Instances"][0]["InstanceId"]
-        LOG.info(f"Launched EC2 instance {self.instance_id}")
+            self.instance_id = run_instance_response["Instances"][0]["InstanceId"]
+            LOG.info(f"Launched EC2 instance {self.instance_id}")
 
-        LOG.info(f"Waiting for EC2 instance {self.instance_id} status to be OK")
-        instance_running_waiter = self.ec2_client.get_waiter("instance_status_ok")
-        instance_running_waiter.wait(
-            InstanceIds=[self.instance_id],
-            WaiterConfig={"Delay": 15, "MaxAttempts": 75},
-        )
-        LOG.info(f"EC2 instance {self.instance_id} status is OK")
+            LOG.info(f"Waiting for EC2 instance {self.instance_id} status to be OK")
+            instance_running_waiter = self.ec2_client.get_waiter("instance_status_ok")
+            instance_running_waiter.wait(
+                InstanceIds=[self.instance_id],
+                WaiterConfig={"Delay": 15, "MaxAttempts": 75},
+            )
+            LOG.info(f"EC2 instance {self.instance_id} status is OK")
+        except botocore.exceptions.WaiterError as e:
+            diagnostics = self._collect_instance_diagnostics()
+            raise InstanceStartupError(
+                message=f"Failed to wait for instance status: {e}", diagnostics=diagnostics
+            ) from e
+        except Exception as e:
+            LOG.error(f"Unexpected error during instance launch: {e}")
+            raise
+
+    def _collect_instance_diagnostics(self) -> str:
+        """Collect diagnostic information about the instance"""
+        if not self.instance_id:
+            return "No instance_id available for diagnostics"
+
+        diagnostic_info = []
+        diagnostic_info.append(f"Collecting diagnostics for instance {self.instance_id}")
+
+        # Get instance details
+        try:
+            instance_response = self.ec2_client.describe_instances(InstanceIds=[self.instance_id])
+            instance = instance_response["Reservations"][0]["Instances"][0]
+
+            # Log instance details
+            diagnostic_info.append(f"Instance state: {instance['State']['Name']}")
+            diagnostic_info.append(f"Instance type: {instance['InstanceType']}")
+            diagnostic_info.append(f"Launch time: {instance['LaunchTime']}")
+            diagnostic_info.append(
+                f"Availability zone: {instance['Placement']['AvailabilityZone']}"
+            )
+        except Exception as e:
+            diagnostic_info.append(f"Failed to get instance details: {e}")
+
+        # Get instance status
+        try:
+            status_response = self.ec2_client.describe_instance_status(
+                InstanceIds=[self.instance_id], IncludeAllInstances=True
+            )
+            if status_response["InstanceStatuses"]:
+                status = status_response["InstanceStatuses"][0]
+                diagnostic_info.append(
+                    f"System status: {status.get('SystemStatus', {}).get('Status', 'unknown')}"
+                )
+                diagnostic_info.append(
+                    f"Instance status: {status.get('InstanceStatus', {}).get('Status', 'unknown')}"
+                )
+
+                # Log status check details if available
+                if "SystemStatus" in status and "Details" in status["SystemStatus"]:
+                    for detail in status["SystemStatus"]["Details"]:
+                        diagnostic_info.append(
+                            f"System check {detail.get('Name')}: {detail.get('Status')}"
+                        )
+
+                if "InstanceStatus" in status and "Details" in status["InstanceStatus"]:
+                    for detail in status["InstanceStatus"]["Details"]:
+                        diagnostic_info.append(
+                            f"Instance check {detail.get('Name')}: {detail.get('Status')}"
+                        )
+        except Exception as e:
+            diagnostic_info.append(f"Failed to get instance status: {e}")
+        return "\n".join(diagnostic_info)
 
     @property
     def ami_id(self) -> str:
