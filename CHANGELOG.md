@@ -1,3 +1,10 @@
+## 0.18.0 (2025-05-16)
+
+### BREAKING CHANGES
+* improved exception handling when instance startup fails. DescribeInstances and DescribeInstanceStatus are now called by the test runner, IAM roles will need to be updated accordingly. (#189) ([`d2b9d4c`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/d2b9d4c7a24b2b9a2074b7da161a3c2c99eed024))
+
+
+
 ## 0.17.6 (2025-04-30)
 
 
