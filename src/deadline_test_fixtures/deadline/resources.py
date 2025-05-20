@@ -120,7 +120,31 @@ class Fleet:
         min_worker_count: int | None = None,
         role_arn: str | None = None,
         raw_kwargs: dict | None = None,
+        fleet_active_interval_s: int = 10,
+        fleet_active_num_retries: int = 30,
     ) -> Fleet:
+        """
+        Creates a new fleet in the specified farm.
+
+        Args:
+            client (DeadlineClient): The DeadlineClient to use for API calls
+            display_name (str): Display name for the fleet
+            farm (Farm): The farm to create the fleet in
+            configuration (dict): Configuration settings for the fleet
+            max_worker_count (int): Maximum number of workers allowed in the fleet
+            min_worker_count (int, optional): Minimum number of workers required in the fleet. Defaults to None.
+            role_arn (str, optional): ARN of the IAM role to associate with the fleet. Defaults to None.
+            raw_kwargs (dict, optional): Additional raw arguments to pass to the API call. Defaults to None.
+            fleet_active_interval_s (int, optional): Interval in seconds between fleet status checks. Defaults to 10.
+            fleet_active_num_retries (int, optional): Maximum number of retries for fleet status checks. Defaults to 30.
+
+        Returns:
+            Fleet: The newly created fleet object
+
+        Raises:
+            ValueError: If the fleet enters an invalid status during creation
+            TimeoutError: If the fleet fails to enter the "ACTIVE" state within fleet_active_interval_s * fleet_active_num_retries seconds
+        """
         kwargs = clean_kwargs(
             {
                 "farmId": farm.id,
@@ -148,8 +172,8 @@ class Fleet:
             client=client,
             desired_status="ACTIVE",
             allowed_statuses=set(["CREATE_IN_PROGRESS"]),
-            interval_s=10,
-            max_retries=6 * 5,  # 5 minutes to allow CMF fleet creation to complete
+            interval_s=fleet_active_interval_s,
+            max_retries=fleet_active_num_retries,
         )
 
         return fleet
