@@ -1,3 +1,10 @@
+## 0.18.1 (2025-05-20)
+
+
+### Features
+* configurable fleet active timeout in Fleet.create() (#191) ([`c66d883`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/c66d883d9bc14032a6643cf5194731c6446e222e))
+
+
 ## 0.18.0 (2025-05-16)
 
 ### BREAKING CHANGES
