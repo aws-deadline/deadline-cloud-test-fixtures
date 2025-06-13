@@ -574,7 +574,7 @@ class TestQueueFleetAssociation:
         "stop_mode",
         [
             "STOP_SCHEDULING_AND_CANCEL_TASKS",
-            "STOP_SCHEDULING_AND_FINISH_TASKS",
+            "STOP_SCHEDULING_AND_COMPLETE_TASKS",
         ],
     )
     def test_delete(self, stop_mode: Any, qfa: QueueFleetAssociation) -> None:
@@ -601,13 +601,14 @@ class TestQueueFleetAssociation:
             "stop_mode",
             [
                 "STOP_SCHEDULING_AND_CANCEL_TASKS",
-                "STOP_SCHEDULING_AND_FINISH_TASKS",
+                "STOP_SCHEDULING_AND_COMPLETE_TASKS",
             ],
         )
         def test_stops(self, stop_mode: Any, qfa: QueueFleetAssociation) -> None:
             # GIVEN
             mock_client = MagicMock()
             mock_client.get_queue_fleet_association.side_effect = [
+                {"status": "ACTIVE"},
                 {"status": stop_mode},
                 {"status": "STOPPED"},
             ]
@@ -623,13 +624,37 @@ class TestQueueFleetAssociation:
                 status=stop_mode,
             )
             mock_client.get_queue_fleet_association.assert_has_calls(
-                [call(farmId=qfa.farm.id, queueId=qfa.queue.id, fleetId=qfa.fleet.id)] * 2
+                [call(farmId=qfa.farm.id, queueId=qfa.queue.id, fleetId=qfa.fleet.id)] * 3
+            )
+
+        def test_cancel_while_waiting_for_complete(self, qfa: QueueFleetAssociation) -> None:
+            # GIVEN
+            mock_client = MagicMock()
+            mock_client.get_queue_fleet_association.side_effect = [
+                {"status": "STOP_SCHEDULING_AND_COMPLETE_TASKS"},
+                {"status": "STOP_SCHEDULING_AND_CANCEL_TASKS"},
+                {"status": "STOPPED"},
+            ]
+
+            # WHEN
+            qfa.stop(client=mock_client, stop_mode="STOP_SCHEDULING_AND_CANCEL_TASKS")
+
+            # THEN
+            mock_client.update_queue_fleet_association.assert_called_once_with(
+                farmId=qfa.farm.id,
+                queueId=qfa.queue.id,
+                fleetId=qfa.fleet.id,
+                status="STOP_SCHEDULING_AND_CANCEL_TASKS",
+            )
+            mock_client.get_queue_fleet_association.assert_has_calls(
+                [call(farmId=qfa.farm.id, queueId=qfa.queue.id, fleetId=qfa.fleet.id)] * 3
             )
 
         def test_raises_when_nonvalid_status_is_reached(self, qfa: QueueFleetAssociation) -> None:
             # GIVEN
             mock_client = MagicMock()
             mock_client.get_queue_fleet_association.side_effect = [
+                {"status": "ACTIVE"},
                 {"status": "BAD"},
             ]
 
@@ -645,6 +670,32 @@ class TestQueueFleetAssociation:
                 str(raised_err.value)
                 == "Association entered a nonvalid status (BAD) while waiting for the desired status: STOPPED"
             )
+
+        @pytest.mark.parametrize(
+            "status",
+            [
+                "STOP_SCHEDULING_AND_CANCEL_TASKS",
+                "STOPPED",
+            ],
+        )
+        def test_does_not_send_stop_if_stopping_or_stopped(
+            self, status: str, qfa: QueueFleetAssociation
+        ) -> None:
+            # GIVEN
+            mock_client = MagicMock()
+            mock_client.get_queue_fleet_association.side_effect = [
+                {"status": status},
+                {"status": "STOPPED"},
+            ]
+
+            # WHEN
+            qfa.stop(
+                client=mock_client,
+                stop_mode="STOP_SCHEDULING_AND_CANCEL_TASKS",
+            )
+
+            # THEN
+            mock_client.update_queue_fleet_association.assert_not_called()
 
 
 class TestJob:
