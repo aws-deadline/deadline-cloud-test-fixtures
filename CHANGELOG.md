@@ -1,3 +1,10 @@
+## 0.18.2 (2025-06-16)
+
+
+
+### Bug Fixes
+* errors while trying to stop queue fleet associations that are already stopped/ing (#194) ([`76540f4`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/76540f46439ba4d0086a9cf14600422d4d456be4))
+
 ## 0.18.1 (2025-05-20)
 
 
