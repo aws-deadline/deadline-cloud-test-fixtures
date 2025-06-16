@@ -258,7 +258,7 @@ class QueueFleetAssociation:
         *,
         client: DeadlineClient,
         stop_mode: Literal[
-            "STOP_SCHEDULING_AND_CANCEL_TASKS", "STOP_SCHEDULING_AND_FINISH_TASKS"
+            "STOP_SCHEDULING_AND_CANCEL_TASKS", "STOP_SCHEDULING_AND_COMPLETE_TASKS"
         ] = "STOP_SCHEDULING_AND_CANCEL_TASKS",
         raw_kwargs: dict | None = None,
     ) -> None:
@@ -278,20 +278,38 @@ class QueueFleetAssociation:
         *,
         client: DeadlineClient,
         stop_mode: Literal[
-            "STOP_SCHEDULING_AND_CANCEL_TASKS", "STOP_SCHEDULING_AND_FINISH_TASKS"
+            "STOP_SCHEDULING_AND_CANCEL_TASKS", "STOP_SCHEDULING_AND_COMPLETE_TASKS"
         ] = "STOP_SCHEDULING_AND_CANCEL_TASKS",
         interval_s: int = 10,
         max_retries: int = 6,
     ) -> None:
-        call_api(
-            description=f"Set queue-fleet association to STOPPING_SCHEDULING_AND_CANCELING_TASKS for queue {self.queue.id} and fleet {self.fleet.id}",
-            fn=lambda: client.update_queue_fleet_association(
+
+        # Check the current status of the queue-fleet association
+        response = call_api(
+            description=f"Get queue-fleet association for queue {self.queue.id} and fleet {self.fleet.id}",
+            fn=lambda: client.get_queue_fleet_association(
                 farmId=self.farm.id,
                 queueId=self.queue.id,
                 fleetId=self.fleet.id,
-                status=stop_mode,
             ),
         )
+        current_qfa_status = response["status"]
+
+        if current_qfa_status == "ACTIVE" or (
+            current_qfa_status == "STOP_SCHEDULING_AND_COMPLETE_TASKS"
+            and stop_mode == "STOP_SCHEDULING_AND_CANCEL_TASKS"
+        ):
+            call_api(
+                description=f"Set queue-fleet association to {stop_mode} for queue {self.queue.id} and fleet {self.fleet.id}",
+                fn=lambda: client.update_queue_fleet_association(
+                    farmId=self.farm.id,
+                    queueId=self.queue.id,
+                    fleetId=self.fleet.id,
+                    status=stop_mode,
+                ),
+            )
+        else:
+            LOG.info(f"queue-fleet association status is already {current_qfa_status}")
 
         # Temporary until we have waiters
         valid_statuses = set(["STOPPED", stop_mode])
