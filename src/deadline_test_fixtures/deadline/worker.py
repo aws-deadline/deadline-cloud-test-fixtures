@@ -23,7 +23,7 @@ from ..models import (
     PosixSessionUser,
 )
 from .resources import CloudWatchLogEvent, Fleet, WorkerLog
-from ..util import call_api, wait_for
+from ..util import call_api, wait_for, retry_with_predicate, is_instance_not_ready
 
 if TYPE_CHECKING:
     from botocore.paginate import PageIterator, Paginator
@@ -353,6 +353,10 @@ class EC2InstanceWorker(DeadlineWorker):
 
         return WorkerLog(worker_id=self.worker_id, logs=log_events)  # type: ignore[arg-type]
 
+    @retry_with_predicate(
+        max_attempts=3, predicate=lambda e: isinstance(e, botocore.exceptions.WaiterError)
+    )
+    @retry_with_predicate(max_attempts=60, delay=10, backoff=1, predicate=is_instance_not_ready)
     def send_command(
         self, command: str, ssm_waiter_config: dict[str, int] = DEFAULT_WAITER_CONFIG
     ) -> CommandResult:
@@ -368,26 +372,20 @@ class EC2InstanceWorker(DeadlineWorker):
         #
         # If we send an SSM command then we will get an InvalidInstanceId error
         # if the instance isn't in that state.
-        NUM_RETRIES = 60
-        SLEEP_INTERVAL_S = 10
-        for i in range(0, NUM_RETRIES):
-            LOG.info(f"Sending SSM command to instance {self.instance_id}")
-            try:
-                send_command_response = self.ssm_client.send_command(
-                    InstanceIds=[self.instance_id],
-                    DocumentName=self.ssm_document_name(),
-                    Parameters={"commands": [command]},
+
+        LOG.info(f"Sending SSM command to instance {self.instance_id}")
+        try:
+            send_command_response = self.ssm_client.send_command(
+                InstanceIds=[self.instance_id],
+                DocumentName=self.ssm_document_name(),
+                Parameters={"commands": [command]},
+            )
+        except botocore.exceptions.ClientError as error:
+            if error.response["Error"]["Code"] == "InvalidInstanceId":
+                LOG.warning(
+                    f"Instance {self.instance_id} is not ready for SSM command (received InvalidInstanceId error)."
                 )
-                break
-            except botocore.exceptions.ClientError as error:
-                error_code = error.response["Error"]["Code"]
-                if error_code == "InvalidInstanceId" and i < NUM_RETRIES - 1:
-                    LOG.warning(
-                        f"Instance {self.instance_id} is not ready for SSM command (received InvalidInstanceId error). Retrying in {SLEEP_INTERVAL_S}s."
-                    )
-                    time.sleep(SLEEP_INTERVAL_S)
-                    continue
-                raise
+            raise
 
         command_id = send_command_response["Command"]["CommandId"]
 
@@ -398,8 +396,15 @@ class EC2InstanceWorker(DeadlineWorker):
                 CommandId=command_id,
                 WaiterConfig=ssm_waiter_config,
             )
-        except botocore.exceptions.WaiterError:  # pragma: no cover
-            # Swallow exception, we're going to check the result anyway
+        except botocore.exceptions.WaiterError as e:  # pragma: no cover
+            if isinstance(e, botocore.exceptions.WaiterError) and (
+                "Undeliverable" in str(e) or "Undeliverable" in str(e.last_response)
+            ):
+                # if it wasn't delivered, retry. Otherwise let's check the command result.
+                LOG.warning(
+                    f"Unable to deliver command {command_id} to instance {self.instance_id} (received UndeliverableError)."
+                )
+                raise e
             pass
 
         ssm_command_result = self.ssm_client.get_command_invocation(
