@@ -397,6 +397,10 @@ class EC2InstanceWorker(DeadlineWorker):
                 WaiterConfig=ssm_waiter_config,
             )
         except botocore.exceptions.WaiterError as e:  # pragma: no cover
+            LOG.warning(f"WaiterError caught for command {command_id}:")
+            LOG.warning(f"\tError reason: {str(e)}")
+            LOG.warning(f"\tWaiter last response: {str(e.last_response)}")
+
             if isinstance(e, botocore.exceptions.WaiterError) and (
                 "Undeliverable" in str(e) or "Undeliverable" in str(e.last_response)
             ):
