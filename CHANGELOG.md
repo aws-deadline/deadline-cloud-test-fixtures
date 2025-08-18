@@ -1,3 +1,13 @@
+## 0.18.4 (2025-08-18)
+
+
+### Features
+* add additional debug logging when SSM waiter fails (#201) ([`1bc786d`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/1bc786de6e833756363c0f345f273a0f7797add4))
+
+### Bug Fixes
+* SSM waiter timeouts not long enough for Windows worker agent setup (#202) ([`61988aa`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/61988aa5c61ec66acc9c0b6d1fcda60d58a7e175))
+
+
 ## 0.18.3 (2025-07-17)
 
 
