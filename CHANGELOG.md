@@ -1,3 +1,10 @@
+## 0.18.5 (2025-10-03)
+
+
+### Features
+* add ability to tag instances (#210) ([`ae42847`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/ae42847375278f1fb79668db65de93b33610c250))
+
+
 ## 0.18.4 (2025-08-18)
 
 
