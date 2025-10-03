@@ -36,6 +36,7 @@ from .worker import (
     WindowsInstanceWorkerBase,
     WindowsInstanceBuildWorker,
     PipInstall,
+    Ec2Tag,
 )
 
 __all__ = [
@@ -72,4 +73,5 @@ __all__ = [
     "WindowsInstanceBuildWorker",
     "WindowsInstanceWorkerBase",
     "WorkerLog",
+    "Ec2Tag",
 ]

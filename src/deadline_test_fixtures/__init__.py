@@ -22,6 +22,7 @@ from .deadline import (
     Step,
     Task,
     TaskStatus,
+    Ec2Tag,
 )
 from .fixtures import (
     BootstrapResources,
@@ -91,4 +92,5 @@ __all__ = [
     "version",
     "worker_config",
     "worker",
+    "Ec2Tag",
 ]

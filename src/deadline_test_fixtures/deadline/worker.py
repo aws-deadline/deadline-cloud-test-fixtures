@@ -38,6 +38,12 @@ DEFAULT_WAITER_CONFIG = {
 }
 
 
+@dataclass
+class Ec2Tag:
+    key: str
+    value: str
+
+
 class DeadlineWorker(abc.ABC):
     @abc.abstractmethod
     def start(self) -> None:
@@ -175,6 +181,8 @@ class EC2InstanceWorker(DeadlineWorker):
 
     instance_type: str
     instance_shutdown_behavior: str
+
+    additional_tags: list[Ec2Tag] = field(default_factory=list)
 
     instance_id: Optional[str] = field(init=False, default=None)
     worker_id: Optional[str] = field(init=False, default=None)
@@ -481,6 +489,16 @@ class EC2InstanceWorker(DeadlineWorker):
                 )
             )
 
+            tags = [
+                {
+                    "Key": "InstanceIdentification",
+                    "Value": "DeadlineScaffoldingWorker",
+                }
+            ]
+
+            for tag in self.additional_tags:
+                tags.append({"Key": tag.key, "Value": tag.value})
+
             run_instance_request = {
                 "MinCount": 1,
                 "MaxCount": 1,
@@ -493,12 +511,7 @@ class EC2InstanceWorker(DeadlineWorker):
                 "TagSpecifications": [
                     {
                         "ResourceType": "instance",
-                        "Tags": [
-                            {
-                                "Key": "InstanceIdentification",
-                                "Value": "DeadlineScaffoldingWorker",
-                            }
-                        ],
+                        "Tags": tags,
                     }
                 ],
                 "InstanceInitiatedShutdownBehavior": self.instance_shutdown_behavior,
