@@ -3,7 +3,7 @@
 set -e
 
 pip install --upgrade pip
-pip install --upgrade hatch "click<3.8"
+pip install --upgrade hatch
 pip install --upgrade twine
 hatch -v run codebuild:lint
 hatch run codebuild:test
