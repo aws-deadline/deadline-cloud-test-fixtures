@@ -1,3 +1,10 @@
+## 0.18.6 (2025-10-08)
+
+
+### Features
+* Add ability to pass env var to worker config (#214) ([`8402cf8`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/8402cf8e8772c204cf3da61ca52563b6932a1665))
+
+
 ## 0.18.5 (2025-10-03)
 
 ### Features
