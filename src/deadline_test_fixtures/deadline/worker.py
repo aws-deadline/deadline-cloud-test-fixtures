@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field, InitVar, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Optional, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Optional, cast, Dict
 
 from ..models import (
     PipInstall,
@@ -164,6 +164,9 @@ class DeadlineWorkerConfiguration:
 
     session_root_dir: str | None = None
     """Path to parent directory of worker session directories"""
+
+    worker_env_var: Dict[str, str] | None = None
+    """Additional feature flag to configure for workers"""
 
 
 @dataclass
@@ -692,6 +695,13 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
                 "$env:AWS_ENDPOINT_URL_DEADLINE = [System.Environment]::GetEnvironmentVariable('AWS_ENDPOINT_URL_DEADLINE','Machine')",
             )
 
+        if config.worker_env_var:
+            for key, value in config.worker_env_var.items():
+                cmds.append(
+                    f"[System.Environment]::SetEnvironmentVariable('{key}', '{value}', [System.EnvironmentVariableTarget]::Machine); "
+                    f"$env:{key} = [System.Environment]::GetEnvironmentVariable('{value}','Machine')",
+                )
+
         return "; ".join(cmds)
 
     def start_worker_service(self):
@@ -938,6 +948,12 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
                 'echo "Environment=DEADLINE_WORKER_LOCAL_SESSION_LOGS=false" >> /etc/systemd/system/deadline-worker.service.d/config.conf',
             )
 
+            cmds.append("systemctl daemon-reload")
+        if config.worker_env_var:
+            for key, value in config.worker_env_var.items():
+                cmds.append(
+                    f"echo 'Environment=\"{key}={value}\"' >> /etc/systemd/system/deadline-worker.service.d/config.conf",
+                )
             cmds.append("systemctl daemon-reload")
 
         return " && ".join(cmds)
