@@ -835,11 +835,11 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
 
         userdata = f"""<powershell>
 $ProgressPreference = 'SilentlyContinue'
-Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe" -OutFile "C:\\python-3.12.9-amd64.exe"
-$installerHash=(Get-FileHash "C:\\python-3.12.9-amd64.exe" -Algorithm "MD5")
-$expectedHash="1cfb1bbf96007b12b98db895dcd86487"
+Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" -OutFile "C:\\python-3.12.10-amd64.exe"
+$installerHash=(Get-FileHash "C:\\python-3.12.10-amd64.exe" -Algorithm "MD5")
+$expectedHash="5eddb0b6f12c852725de071ae681dde4"
 if ($installerHash.Hash -ne $expectedHash) {{ throw "Could not verify Python installer." }}
-Start-Process -FilePath "C:\\python-3.12.9-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
+Start-Process -FilePath "C:\\python-3.12.10-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
 Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\\AWSCLIV2.msi"
 Start-Process msiexec.exe -ArgumentList "/i C:\\AWSCLIV2.msi /quiet" -Wait
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
