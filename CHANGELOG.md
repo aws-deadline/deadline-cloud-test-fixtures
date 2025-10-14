@@ -1,3 +1,10 @@
+## 0.18.7 (2025-10-14)
+
+
+### Features
+* Upgraded the worker instance python version to 3.12.10 (#216) ([`d0817c8`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/d0817c85c33879f8cc52596ae69edbfeabf2eadd))
+
+
 ## 0.18.6 (2025-10-08)
 
 
