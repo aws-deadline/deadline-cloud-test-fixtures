@@ -754,22 +754,54 @@ class Job:
         self,
         *,
         deadline_client: DeadlineClient,
+        require_latest_session_action: bool = False,
+        wait_interval_sec: int = 2,
+        max_retries: int = 10,
     ) -> Task:
         """
         Asserts that the job has a single step and a single task, and returns the task.
 
         Args:
             deadline_client (deadline_test_fixtures.client.DeadlineClient): Deadline boto client
+            require_latest_session_action (bool): If True, retry until the task has a latestSessionActionId.
+                This helps handle eventual consistency issues where the task may not yet have the
+                latestSessionActionId field populated even though the job is complete.
+            wait_interval_sec (int): Interval between retries in seconds when require_latest_session_action is True.
+            max_retries (int): Maximum number of retries when require_latest_session_action is True.
         Return:
             task: The single task of the job
         """
-        # Assert there is a single step and task
+
         steps = list(self.list_steps(deadline_client=deadline_client))
         assert len(steps) == 1, "Job contains multiple steps"
         step = steps[0]
-        tasks = list(step.list_tasks(deadline_client=deadline_client))
-        assert len(tasks) == 1, "Job contains multiple tasks"
-        return tasks[0]
+
+        def _get_task():
+            tasks = list(step.list_tasks(deadline_client=deadline_client))
+            assert len(tasks) == 1, "Job contains multiple tasks"
+            return tasks[0]
+
+        if require_latest_session_action:
+            task = None
+
+            def _has_session_action():
+                nonlocal task
+                task = _get_task()
+                return task.latest_session_action_id is not None
+
+            wait_for(
+                description=f"task in job {self.id} to have latestSessionActionId",
+                predicate=_has_session_action,
+                interval_s=wait_interval_sec,
+                max_retries=max_retries,
+            )
+            # This is added to make the type checker happy
+            # If we timed out waiting for the latestSessionActionId, then a TimeoutException
+            # is rasied. Otherwise the task variable is assigned and not None
+            assert task is not None, "Task is None"
+            return task
+        else:
+            return _get_task()
 
     def assert_single_task_log_contains(
         self,
@@ -818,7 +850,9 @@ class Job:
         if isinstance(expected_pattern, str):
             expected_pattern = re.compile(expected_pattern)
 
-        task = self.get_only_task(deadline_client=deadline_client)
+        task = self.get_only_task(
+            deadline_client=deadline_client, require_latest_session_action=True
+        )
 
         session = task.get_last_session(deadline_client=deadline_client)
         session.assert_log_contains(
@@ -867,7 +901,9 @@ class Job:
         if isinstance(expected_pattern, str):
             expected_pattern = re.compile(expected_pattern)
 
-        task = self.get_only_task(deadline_client=deadline_client)
+        task = self.get_only_task(
+            deadline_client=deadline_client, require_latest_session_action=True
+        )
 
         session = task.get_last_session(deadline_client=deadline_client)
         session.assert_log_does_not_contain(
