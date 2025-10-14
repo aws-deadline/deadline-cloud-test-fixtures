@@ -1148,14 +1148,12 @@ class TestJob:
         # GIVEN
         deadline_client = MagicMock()
         logs_client = MagicMock()
-        step = MagicMock()
         task = MagicMock()
-        step.list_tasks.return_value = [task]
         task.get_last_session.return_value = session
         expected_pattern = re.compile(r"a message")
 
         with (
-            patch.object(job, "list_steps", return_value=[step]) as mock_list_steps,
+            patch.object(job, "get_only_task", return_value=task) as mock_get_only_task,
             patch.object(session, "assert_log_contains") as mock_session_assert_log_contains,
         ):
 
@@ -1167,8 +1165,6 @@ class TestJob:
             )
 
         # THEN
-        # This test is only to confirm that no assertion is raised, since the expected message
-        # is in the logs
         mock_session_assert_log_contains.assert_called_once_with(
             logs_client=logs_client,
             expected_pattern=expected_pattern,
@@ -1176,8 +1172,9 @@ class TestJob:
             backoff_factor=datetime.timedelta(milliseconds=300),
             retries=6,
         )
-        mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
-        step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
+        mock_get_only_task.assert_called_once_with(
+            deadline_client=deadline_client, require_latest_session_action=True
+        )
         task.get_last_session.assert_called_once_with(deadline_client=deadline_client)
 
     def test_assert_single_task_log_does_not_contain_success(
@@ -1186,14 +1183,12 @@ class TestJob:
         # GIVEN
         deadline_client = MagicMock()
         logs_client = MagicMock()
-        step = MagicMock()
         task = MagicMock()
-        step.list_tasks.return_value = [task]
         task.get_last_session.return_value = session
         expected_pattern = re.compile(r"a message")
 
         with (
-            patch.object(job, "list_steps", return_value=[step]) as mock_list_steps,
+            patch.object(job, "get_only_task", return_value=task) as mock_get_only_task,
             patch.object(
                 session, "assert_log_does_not_contain"
             ) as mock_session_assert_log_does_not_contain,
@@ -1215,9 +1210,204 @@ class TestJob:
             assert_fail_msg="Expected message found in session log",
             consistency_wait_time=timedelta(seconds=3),
         )
-        mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
-        step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
+        mock_get_only_task.assert_called_once_with(
+            deadline_client=deadline_client, require_latest_session_action=True
+        )
         task.get_last_session.assert_called_once_with(deadline_client=deadline_client)
+
+    def test_get_only_task_with_require_latest_session_action_true(self, job: Job) -> None:
+        """Test that get_only_task retries until task has session action ID."""
+        # GIVEN
+        deadline_client = MagicMock()
+        step = MagicMock()
+
+        # Create tasks: first without session action ID, second with it
+        task_without_session = MagicMock()
+        task_without_session.latest_session_action_id = None
+        task_without_session.id = "task-123"
+
+        task_with_session = MagicMock()
+        task_with_session.latest_session_action_id = (
+            "sessionaction-abcd1234567890abcdef1234567890ab-1"
+        )
+        task_with_session.id = "task-123"
+
+        # First call returns task without session action, second call returns task with it
+        step.list_tasks.side_effect = [[task_without_session], [task_with_session]]
+
+        with patch.object(job, "list_steps", return_value=[step]):
+            # WHEN
+            result = job.get_only_task(
+                deadline_client=deadline_client, require_latest_session_action=True
+            )
+
+            # THEN
+            assert result == task_with_session
+            # In test environment, wait_for_shim calls predicate until it returns True
+            # So we should see multiple calls to list_tasks
+            assert step.list_tasks.call_count >= 2
+
+    def test_get_only_task_with_require_latest_session_action_false(self, job: Job) -> None:
+        """Test that get_only_task works normally when require_latest_session_action=False."""
+        # GIVEN
+        deadline_client = MagicMock()
+        step = MagicMock()
+        task = MagicMock()
+        task.latest_session_action_id = None  # No session action ID
+        task.id = "task-123"
+
+        step.list_tasks.return_value = [task]
+
+        with patch.object(job, "list_steps", return_value=[step]) as mock_list_steps:
+            # WHEN
+            result = job.get_only_task(
+                deadline_client=deadline_client, require_latest_session_action=False
+            )
+
+            # THEN
+            assert result == task
+            # Should only be called once since we don't require session action ID
+            step.list_tasks.assert_called_once_with(deadline_client=deadline_client)
+            mock_list_steps.assert_called_once_with(deadline_client=deadline_client)
+
+    def test_assert_single_task_log_contains_uses_require_latest_session_action(
+        self, job: Job, session: Session
+    ) -> None:
+        """Test that assert_single_task_log_contains uses require_latest_session_action=True."""
+        # GIVEN
+        deadline_client = MagicMock()
+        logs_client = MagicMock()
+        step = MagicMock()
+        expected_pattern = re.compile(r"test pattern")
+
+        # Create tasks: first without session action ID, second with it
+        task_without_session = MagicMock()
+        task_without_session.latest_session_action_id = None
+        task_without_session.get_last_session.return_value = session
+
+        task_with_session = MagicMock()
+        task_with_session.latest_session_action_id = (
+            "sessionaction-abcd1234567890abcdef1234567890ab-1"
+        )
+        task_with_session.get_last_session.return_value = session
+
+        step.list_tasks.side_effect = [[task_without_session], [task_with_session]]
+
+        with (
+            patch.object(job, "list_steps", return_value=[step]),
+            patch.object(session, "assert_log_contains") as mock_session_assert_log_contains,
+        ):
+            # WHEN
+            job.assert_single_task_log_contains(
+                deadline_client=deadline_client,
+                logs_client=logs_client,
+                expected_pattern=expected_pattern,
+            )
+
+            # THEN
+            # Verify retries occurred
+            assert step.list_tasks.call_count >= 2
+            task_with_session.get_last_session.assert_called_once_with(
+                deadline_client=deadline_client
+            )
+            mock_session_assert_log_contains.assert_called_once()
+
+    def test_assert_single_task_log_does_not_contain_uses_require_latest_session_action(
+        self, job: Job, session: Session
+    ) -> None:
+        """Test that assert_single_task_log_does_not_contain uses require_latest_session_action=True."""
+        # GIVEN
+        deadline_client = MagicMock()
+        logs_client = MagicMock()
+        step = MagicMock()
+        expected_pattern = re.compile(r"test pattern")
+
+        # Create tasks: first without session action ID, second with it
+        task_without_session = MagicMock()
+        task_without_session.latest_session_action_id = None
+        task_without_session.get_last_session.return_value = session
+
+        task_with_session = MagicMock()
+        task_with_session.latest_session_action_id = (
+            "sessionaction-abcd1234567890abcdef1234567890ab-1"
+        )
+        task_with_session.get_last_session.return_value = session
+
+        step.list_tasks.side_effect = [[task_without_session], [task_with_session]]
+
+        with (
+            patch.object(job, "list_steps", return_value=[step]),
+            patch.object(
+                session, "assert_log_does_not_contain"
+            ) as mock_session_assert_log_does_not_contain,
+        ):
+            # WHEN
+            job.assert_single_task_log_does_not_contain(
+                deadline_client=deadline_client,
+                logs_client=logs_client,
+                expected_pattern=expected_pattern,
+            )
+
+            # THEN
+            # Verify retries occurred
+            assert step.list_tasks.call_count >= 2
+            task_with_session.get_last_session.assert_called_once_with(
+                deadline_client=deadline_client
+            )
+            mock_session_assert_log_does_not_contain.assert_called_once()
+
+    def test_get_only_task_require_latest_session_action_retry_logic(self, job: Job) -> None:
+        """Test that get_only_task calls wait_for when require_latest_session_action=True and returns the task."""
+        # GIVEN
+        deadline_client = MagicMock()
+        step = MagicMock()
+
+        # Create tasks: first without session action ID, second with it
+        task_without_session = MagicMock()
+        task_without_session.latest_session_action_id = None
+        task_without_session.id = "task-123"
+
+        task_with_session = MagicMock()
+        task_with_session.latest_session_action_id = (
+            "sessionaction-abcd1234567890abcdef1234567890ab-1"
+        )
+        task_with_session.id = "task-123"
+
+        step.list_tasks.side_effect = [[task_without_session], [task_with_session]]
+
+        with (
+            patch.object(job, "list_steps", return_value=[step]),
+            patch.object(mod, "wait_for") as mock_wait_for,
+        ):
+            # Configure wait_for to call the predicate multiple times to simulate retry
+            def wait_for_side_effect(predicate, **kwargs):
+                # Call predicate twice to simulate retry behavior
+                predicate()  # First call returns False (task without session action)
+                predicate()  # Second call returns True (task with session action)
+                return None
+
+            mock_wait_for.side_effect = wait_for_side_effect
+
+            # WHEN
+            result = job.get_only_task(
+                deadline_client=deadline_client, require_latest_session_action=True
+            )
+
+            # THEN
+            # Verify wait_for was called
+            mock_wait_for.assert_called_once()
+
+            # Verify the call had the expected keyword arguments
+            call_kwargs = mock_wait_for.call_args.kwargs
+            assert "description" in call_kwargs
+            assert (
+                f"task in job {job.id} to have latestSessionActionId" in call_kwargs["description"]
+            )
+            assert call_kwargs["interval_s"] == 2
+            assert call_kwargs["max_retries"] == 10
+
+            # Verify the method returns the task with session action ID
+            assert result == task_with_session
 
     def test_list_steps(
         self,
