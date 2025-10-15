@@ -1,3 +1,10 @@
+## 0.18.7 (2025-10-15)
+
+
+
+### Bug Fixes
+* &#34;no latest session action ID&#34; error after job completed (#218) ([`5f7ff02`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/5f7ff02aaea328e0f1f911257586140f4429f295))
+
 ## 0.18.6 (2025-10-08)
 
 
