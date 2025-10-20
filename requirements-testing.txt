@@ -3,7 +3,7 @@ pytest == 8.4.*
 pytest-cov == 5.0.*
 pytest-timeout == 2.3.*
 pytest-xdist == 3.6.*
-black == 24.4.*
+black == 25.9.*
 moto[cloudformation,s3] == 5.0.*
 mypy == 1.18.*
 ruff == 0.5.*
