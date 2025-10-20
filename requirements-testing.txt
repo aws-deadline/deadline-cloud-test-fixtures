@@ -7,4 +7,4 @@ black == 24.4.*
 moto[cloudformation,s3] == 5.0.*
 mypy == 1.10.*
 ruff == 0.5.*
-twine == 5.1.*
+twine == 6.2.*
