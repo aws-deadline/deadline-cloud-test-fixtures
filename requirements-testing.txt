@@ -6,5 +6,5 @@ pytest-xdist == 3.6.*
 black == 25.9.*
 moto[cloudformation,s3] == 5.0.*
 mypy == 1.18.*
-ruff == 0.5.*
+ruff == 0.14.*
 twine == 6.2.*
