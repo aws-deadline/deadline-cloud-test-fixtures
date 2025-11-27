@@ -8,3 +8,5 @@ __pycache__/
 .vscode
 build
 *_version.py
+.DS_Store
+
