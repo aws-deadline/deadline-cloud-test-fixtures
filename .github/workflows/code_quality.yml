@@ -2,7 +2,7 @@ name: Code Quality
 
 on:
   pull_request:
-    branches: [ mainline, release, 'patch_*' ]
+    branches: [ mainline, release, 'patch_*', "feature_*" ]
   workflow_call:
     inputs:
       branch:
