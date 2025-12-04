@@ -630,20 +630,20 @@ class EC2InstanceWorker(DeadlineWorker):
         return self._ami_id
 
     def _wait_until_userdata_finishes(self) -> tuple[bool, str]:
-        command: CommandResult | None = None
+        result: CommandResult | None = None
         success: bool = False
         LOG.info("Waiting for userdata to finish")
 
         def get_userdata_result() -> bool:
-            nonlocal command
+            nonlocal result
             nonlocal success
-            command = self.send_command(self.userdata_success_script())
+            result = self.send_command(self.userdata_success_script())
 
-            if self.USERDATA_SUCCESS_STRING in str(command):
+            if self.USERDATA_SUCCESS_STRING in str(result):
                 success = True
                 return True
 
-            if self.USERDATA_FAILURE_STRING in str(command):
+            if self.USERDATA_FAILURE_STRING in str(result):
                 success = False
                 return True
 
@@ -662,7 +662,7 @@ class EC2InstanceWorker(DeadlineWorker):
             "Userdata finished %s.",
             "successfully" if success else "unsuccessfully",
         )
-        return success, str(command)
+        return success, str(result)
 
 
 @dataclass
