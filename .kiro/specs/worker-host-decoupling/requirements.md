@@ -46,18 +46,6 @@ This document specifies the requirements for refactoring the `deadline-cloud-tes
 
 ### Requirement 3
 
-**User Story:** As a test developer, I want the refactored architecture to maintain backward compatibility with existing tests, so that I don't have to rewrite all my existing test code.
-
-#### Acceptance Criteria
-
-1. WHEN existing tests use the current worker fixture THEN the system SHALL continue to function without modification
-2. WHEN the worker fixture is used THEN the system SHALL provide the same interface as the current DeadlineWorker class
-3. WHEN tests access worker methods THEN the system SHALL delegate to the appropriate host or worker agent manager
-4. WHEN tests use EC2InstanceWorker classes directly THEN the system SHALL maintain the existing behavior
-5. WHEN the system creates a worker through the fixture THEN the system SHALL automatically manage both host and worker agent lifecycles as before
-
-### Requirement 4
-
 **User Story:** As a test developer, I want to create host-only fixtures that don't include worker agent configuration, so that I can test different worker agent scenarios on the same host.
 
 #### Acceptance Criteria
@@ -68,7 +56,7 @@ This document specifies the requirements for refactoring the `deadline-cloud-tes
 4. WHEN a test stops a worker agent THEN the system SHALL leave the worker host running and available for reuse
 5. WHEN a test completes THEN the system SHALL clean up the worker host if it was created by the fixture
 
-### Requirement 5
+### Requirement 4
 
 **User Story:** As a library maintainer, I want the new architecture to separate concerns between host management and worker agent management, so that the codebase is easier to maintain and extend.
 
@@ -80,7 +68,7 @@ This document specifies the requirements for refactoring the `deadline-cloud-tes
 4. WHEN a DeadlineWorker implementation manages worker agent lifecycle THEN the system SHALL NOT contain worker host provisioning logic
 5. WHEN the system combines a worker host and worker agent THEN the system SHALL use composition with DeadlineWorker containing a WorkerHost instance
 
-### Requirement 6
+### Requirement 5
 
 **User Story:** As a test developer, I want to configure worker agents with different settings on the same host, so that I can test worker behavior under various configurations without reprovisioning infrastructure.
 
@@ -92,7 +80,7 @@ This document specifies the requirements for refactoring the `deadline-cloud-tes
 4. WHEN multiple worker agents are configured sequentially THEN the system SHALL ensure each configuration is independent
 5. WHEN a worker agent is reconfigured THEN the system SHALL update the worker registration with Deadline Cloud service
 
-### Requirement 7
+### Requirement 6
 
 **User Story:** As a test developer, I want clear error messages when host or worker agent operations fail, so that I can quickly diagnose and fix issues.
 
@@ -104,7 +92,7 @@ This document specifies the requirements for refactoring the `deadline-cloud-tes
 4. WHEN a worker agent fails to start THEN the system SHALL include relevant log information in the error message
 5. WHEN an operation fails THEN the system SHALL distinguish between worker-host-related and worker-agent-related failures
 
-### Requirement 8
+### Requirement 7
 
 **User Story:** As a library maintainer, I want the refactored code to support both Windows and POSIX EC2 host types, so that tests can run on different operating systems.
 
@@ -116,14 +104,4 @@ This document specifies the requirements for refactoring the `deadline-cloud-tes
 4. WHEN a worker host platform is selected THEN the system SHALL provide the appropriate WorkerHost implementation
 5. WHEN extending to new worker host types THEN the system SHALL allow new WorkerHost implementations without modifying worker agent code
 
-### Requirement 9
 
-**User Story:** As a consumer of the library who has extended WindowsInstanceWorkerBase or PosixInstanceWorkerBase, I want these public API classes to maintain their interface and behavior, so that my existing code continues to work without modification.
-
-#### Acceptance Criteria
-
-1. WHEN the refactoring is complete THEN the system SHALL preserve the WindowsInstanceWorkerBase class as a public API
-2. WHEN the refactoring is complete THEN the system SHALL preserve the PosixInstanceWorkerBase class as a public API
-3. WHEN external code inherits from WindowsInstanceWorkerBase THEN the system SHALL maintain all existing abstract methods and their signatures
-4. WHEN external code inherits from PosixInstanceWorkerBase THEN the system SHALL maintain all existing abstract methods and their signatures
-5. WHEN external code uses instances of WindowsInstanceWorkerBase or PosixInstanceWorkerBase THEN the system SHALL maintain all existing public methods and their behavior
