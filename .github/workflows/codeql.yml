@@ -4,7 +4,7 @@ on:
   push:
     branches: [ "mainline" ]
   pull_request:
-    branches: [ "mainline" ]
+    branches: [ "mainline", "feature_*" ]
   schedule:
     - cron: '0 8 * * MON'
 
