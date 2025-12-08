@@ -1,3 +1,12 @@
+## 0.18.8 (2025-12-08)
+
+
+### Features
+* check if userdata finishes successfully (#240) ([`dec2a8f`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/dec2a8f5c7b052ffbff90410dd5323ab57845d54))
+* check if userdata finishes successfully ([`dec2a8f`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/dec2a8f5c7b052ffbff90410dd5323ab57845d54))
+
+
+
 ## 0.18.7 (2025-10-15)
 
 
