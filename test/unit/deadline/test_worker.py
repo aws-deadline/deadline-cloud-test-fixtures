@@ -12,18 +12,18 @@ import pytest
 from botocore.exceptions import ClientError
 from moto import mock_aws
 
-from deadline_test_fixtures.deadline import worker as mod
 from deadline_test_fixtures import (
+    CodeArtifactRepositoryInfo,
     CommandResult,
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
-    PosixInstanceBuildWorker,
-    PipInstall,
-    CodeArtifactRepositoryInfo,
-    S3Object,
-    Fleet,
     Farm,
+    Fleet,
+    PipInstall,
+    PosixInstanceBuildWorker,
+    S3Object,
 )
+from deadline_test_fixtures.deadline import worker as mod
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +42,7 @@ def mock_sleep() -> Generator[None, None, None]:
 @pytest.fixture(autouse=True)
 def wait_for_shim() -> Generator[None, None, None]:
     import sys
+
     from deadline_test_fixtures.util import wait_for
 
     # Force the wait_for to have a short interval for unit tests
@@ -175,6 +176,9 @@ class TestPosixInstanceBuildWorker:
             patch.object(worker, "_launch_instance") as mock_launch_instance,
             patch.object(worker, "_setup_worker_agent") as mock_setup_worker_agent,
             patch.object(
+                worker, "_wait_until_userdata_finishes", return_value=(True, "")
+            ) as mock_wait_until_userdata_finishes,
+            patch.object(
                 worker,
                 "get_worker_id",
                 return_value=CommandResult(
@@ -190,6 +194,132 @@ class TestPosixInstanceBuildWorker:
         mock_stage_s3_bucket.assert_called_once()
         mock_launch_instance.assert_called_once_with(s3_files=s3_files)
         mock_setup_worker_agent.assert_called_once()
+        mock_wait_until_userdata_finishes.assert_called_once()
+
+    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    def test_start_userdata_successful(self, worker: PosixInstanceBuildWorker) -> None:
+        # GIVEN
+        s3_files = [
+            ("s3://bucket/key", "/tmp/key"),
+            ("s3://bucket/tmp/file", "/tmp/file"),
+        ]
+        ssm_send_command_return_value = {
+            "Command": {
+                "CommandId": "37c7a933-5e67-4cee-a36e-12e1e3a51237",
+            }
+        }
+        ssm_get_command_invocation_return_value = {
+            "ResponseCode": 0,
+            "StandardOutputContent": PosixInstanceBuildWorker.USERDATA_SUCCESS_STRING,
+            "StandardErrorContent": "",
+        }
+
+        with (
+            patch.object(worker, "_stage_s3_bucket", return_value=s3_files),
+            patch.object(worker, "_launch_instance"),
+            patch.object(worker, "_setup_worker_agent") as mock_setup_worker_agent,
+            patch.object(
+                worker.ssm_client, "send_command", return_value=ssm_send_command_return_value
+            ) as mock_send_command,
+            patch.object(
+                worker.ssm_client,
+                "get_command_invocation",
+                return_value=ssm_get_command_invocation_return_value,
+            ) as mock_get_command_invocation,
+            patch.object(worker.ssm_client, "get_waiter"),
+            patch.object(
+                worker,
+                "get_worker_id",
+                return_value=CommandResult(
+                    exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+            ),
+        ):
+            # WHEN
+            worker.start()
+
+        # THEN
+        # Make sure we get to the end of the function and that we sent the
+        # userdata commands
+        mock_setup_worker_agent.assert_called_once()
+        mock_send_command.assert_called_once()
+        mock_get_command_invocation.assert_called_once()
+
+    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    def test_start_userdata_unsuccessful(self, worker: PosixInstanceBuildWorker) -> None:
+        # GIVEN
+        s3_files = [
+            ("s3://bucket/key", "/tmp/key"),
+            ("s3://bucket/tmp/file", "/tmp/file"),
+        ]
+        ssm_send_command_return_value = {
+            "Command": {
+                "CommandId": "37c7a933-5e67-4cee-a36e-12e1e3a51237",
+            }
+        }
+        failure_content = (
+            f"{PosixInstanceBuildWorker.USERDATA_FAILURE_STRING}\nAWS CLI failed to install"
+        )
+        ssm_get_command_invocation_return_value = {
+            "ResponseCode": 0,
+            "StandardOutputContent": failure_content,
+            "StandardErrorContent": "",
+        }
+
+        with (
+            patch.object(worker, "_stage_s3_bucket", return_value=s3_files),
+            patch.object(worker, "_launch_instance"),
+            patch.object(
+                worker.ssm_client, "send_command", return_value=ssm_send_command_return_value
+            ) as mock_send_command,
+            patch.object(
+                worker.ssm_client,
+                "get_command_invocation",
+                return_value=ssm_get_command_invocation_return_value,
+            ) as mock_get_command_invocation,
+            patch.object(worker.ssm_client, "get_waiter"),
+            patch.object(
+                worker,
+                "get_worker_id",
+                return_value=CommandResult(
+                    exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+            ),
+            pytest.raises(AssertionError) as excinfo,
+        ):
+            # WHEN
+            worker.start()
+
+        # THEN
+        # Make sure we get to the end of the function and that we sent the
+        # userdata commands
+        mock_send_command.assert_called_once()
+        mock_get_command_invocation.assert_called_once()
+        assert failure_content in str(excinfo.value)
+
+    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    def test_start_userdata_timed_out(self, worker: PosixInstanceBuildWorker) -> None:
+        # GIVEN
+        s3_files = [
+            ("s3://bucket/key", "/tmp/key"),
+            ("s3://bucket/tmp/file", "/tmp/file"),
+        ]
+
+        with (
+            patch.object(worker, "_stage_s3_bucket", return_value=s3_files),
+            patch.object(worker, "_launch_instance"),
+            patch.object(mod, "wait_for", side_effect=TimeoutError()),
+            patch.object(
+                worker,
+                "get_worker_id",
+                return_value=CommandResult(
+                    exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+            ),
+            pytest.raises(TimeoutError),
+        ):
+            # WHEN / #THEN
+            worker.start()
 
     def test_stage_s3_bucket(
         self,
@@ -251,8 +381,11 @@ class TestPosixInstanceBuildWorker:
     def test_stop(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         # WHEN
-        with patch.object(
-            worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+        with (
+            patch.object(
+                worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+            ),
+            patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
         ):
             worker.start()
         instance_id = worker.instance_id
@@ -273,8 +406,11 @@ class TestPosixInstanceBuildWorker:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
-            with patch.object(
-                worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+            with (
+                patch.object(
+                    worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+                patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
             ):
                 worker.start()
 
@@ -288,15 +424,18 @@ class TestPosixInstanceBuildWorker:
             send_command_spy.assert_called_once_with(
                 InstanceIds=[worker.instance_id],
                 DocumentName="AWS-RunShellScript",
-                Parameters={"commands": ["set -eou pipefail; " + cmd]},
+                Parameters={"commands": ["set -euxo pipefail; " + cmd]},
             )
 
         def test_retries_when_instance_not_ready(self, worker: PosixInstanceBuildWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
-            with patch.object(
-                worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+            with (
+                patch.object(
+                    worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+                patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
             ):
                 worker.start()
             real_send_command = worker.ssm_client.send_command
@@ -323,7 +462,7 @@ class TestPosixInstanceBuildWorker:
                     call(
                         InstanceIds=[worker.instance_id],
                         DocumentName="AWS-RunShellScript",
-                        Parameters={"commands": ["set -eou pipefail; " + cmd]},
+                        Parameters={"commands": ["set -euxo pipefail; " + cmd]},
                     )
                 ]
                 * 2
@@ -333,8 +472,11 @@ class TestPosixInstanceBuildWorker:
             # GIVEN
             cmd = 'echo "Hello world"'
             # WHEN
-            with patch.object(
-                worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+            with (
+                patch.object(
+                    worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+                patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
             ):
                 worker.start()
             err = ClientError({"Error": {"Code": "SomethingWentWrong"}}, "SendCommand")
@@ -351,7 +493,7 @@ class TestPosixInstanceBuildWorker:
             mock_send_command.assert_called_once_with(
                 InstanceIds=[worker.instance_id],
                 DocumentName="AWS-RunShellScript",
-                Parameters={"commands": ["set -eou pipefail; " + cmd]},
+                Parameters={"commands": ["set -euxo pipefail; " + cmd]},
             )
 
     @pytest.mark.parametrize(
