@@ -1378,6 +1378,185 @@ This design allows:
 - Tests using `worker` to get the traditional unified behavior
 - Proper cleanup ordering (agent before host)
 
+### Custom Worker Fixtures with Host Reuse
+
+While the library provides the foundational `worker_host` fixture that enables host reuse, consuming packages must implement their own worker fixtures to take advantage of this capability. The key design decision is choosing the appropriate fixture scope (function, class, module, or session) to balance test isolation with resource efficiency. For function-scoped workers, consuming packages can use `pytest.mark.parametrize` to provide different worker configurations to a single function-scoped fixture. Here's an example of how consuming packages can implement scoped worker fixtures:
+
+#### Function-Scoped Worker Fixtures
+
+Function-scoped fixtures provide maximum test isolation but require setup/teardown for each test. They work well with parametrization for testing multiple configurations:
+
+```python
+import pytest
+from deadline_test_fixtures import DeadlineWorkerConfiguration
+from deadline_test_fixtures.deadline.worker import PosixInstanceBuildWorker
+
+@pytest.fixture(scope="function")
+def parametrized_worker(worker_host, request):
+    """Function-scoped worker that accepts configuration via parametrize."""
+    config = request.param  # Configuration provided by parametrize
+    
+    worker = PosixInstanceBuildWorker(configuration=config, worker_host=worker_host)
+    worker.start()
+    yield worker
+    worker.stop()
+
+# Test using parametrized function-scoped fixture
+@pytest.mark.parametrize("parametrized_worker", [
+    DeadlineWorkerConfiguration(
+        farm_id="test-farm-1", fleet_id="test-fleet-1", region="us-west-2",
+        allow_shutdown=True, worker_agent_install=PipInstall("deadline-cloud-worker-agent==1.0.0")
+    ),
+    DeadlineWorkerConfiguration(
+        farm_id="test-farm-2", fleet_id="test-fleet-2", region="us-west-2", 
+        allow_shutdown=True, worker_agent_install=PipInstall("deadline-cloud-worker-agent==1.1.0")
+    ),
+], indirect=True)
+def test_multiple_configurations(parametrized_worker):
+    # Test runs once for each parametrized configuration
+    # Each run gets a fresh worker with different config on the same host
+    pass
+```
+
+#### Module-Scoped Worker Fixtures
+
+Module-scoped fixtures amortize setup cost across all tests in a module, making them efficient for testing related functionality:
+
+```python
+@pytest.fixture(scope="module")
+def render_worker(worker_host):
+    """Module-scoped worker configured for rendering workloads."""
+    config = DeadlineWorkerConfiguration(
+        farm_id="render-farm",
+        fleet_id="render-fleet",
+        region="us-west-2",
+        allow_shutdown=True,
+        worker_agent_install=PipInstall("deadline-cloud-worker-agent==1.0.0"),
+        file_mappings=[("./render_assets/*", "/tmp/render/")],
+        worker_env_var={"WORKLOAD_TYPE": "render"}
+    )
+    
+    worker = PosixInstanceBuildWorker(configuration=config, worker_host=worker_host)
+    worker.start()
+    yield worker
+    worker.stop()
+
+@pytest.fixture(scope="module") 
+def simulation_worker(worker_host):
+    """Module-scoped worker configured for simulation workloads."""
+    config = DeadlineWorkerConfiguration(
+        farm_id="simulation-farm",
+        fleet_id="simulation-fleet", 
+        region="us-west-2",
+        allow_shutdown=True,
+        worker_agent_install=PipInstall("deadline-cloud-worker-agent==1.1.0"),
+        file_mappings=[("./simulation_assets/*", "/tmp/simulation/")],
+        worker_env_var={"WORKLOAD_TYPE": "simulation"}
+    )
+    
+    worker = PosixInstanceBuildWorker(configuration=config, worker_host=worker_host)
+    worker.start()
+    yield worker
+    worker.stop()
+
+# Tests using module-scoped fixtures
+def test_render_job_submission(render_worker):
+    # Test render job submission and execution
+    pass
+
+def test_simulation_job_submission(simulation_worker):
+    # Test simulation job submission and execution
+    pass
+```
+
+#### Class-Scoped Worker Fixtures
+
+Class-scoped fixtures are ideal for organizing related tests that need the same specialized worker configuration:
+
+```python
+class TestRenderWorkflows:
+    
+    @pytest.fixture(scope="class")
+    def maya_worker(self, worker_host):
+        """Class-scoped worker configured specifically for Maya rendering."""
+        config = DeadlineWorkerConfiguration(
+            farm_id="maya-farm",
+            fleet_id="maya-fleet",
+            region="us-west-2", 
+            allow_shutdown=True,
+            worker_agent_install=PipInstall("deadline-cloud-worker-agent==1.0.0"),
+            file_mappings=[
+                ("./maya_plugins/*", "/opt/maya/plugins/"),
+                ("./render_scripts/*", "/tmp/scripts/")
+            ],
+            worker_env_var={
+                "MAYA_VERSION": "2024",
+                "RENDER_ENGINE": "arnold"
+            }
+        )
+        
+        worker = PosixInstanceBuildWorker(configuration=config, worker_host=worker_host)
+        worker.start()
+        yield worker
+        worker.stop()
+    
+    def test_maya_scene_rendering(self, maya_worker):
+        # Test Maya-specific rendering functionality
+        pass
+    
+    def test_maya_plugin_loading(self, maya_worker):
+        # Test Maya plugin functionality
+        pass
+    
+    def test_arnold_render_settings(self, maya_worker):
+        # Test Arnold-specific render settings
+        pass
+
+class TestSimulationWorkflows:
+    
+    @pytest.fixture(scope="class")
+    def houdini_worker(self, worker_host):
+        """Class-scoped worker configured for Houdini simulations."""
+        config = DeadlineWorkerConfiguration(
+            farm_id="houdini-farm",
+            fleet_id="houdini-fleet",
+            region="us-west-2",
+            allow_shutdown=True,
+            worker_agent_install=PipInstall("deadline-cloud-worker-agent==1.0.0"),
+            file_mappings=[("./houdini_assets/*", "/tmp/houdini/")],
+            worker_env_var={"HOUDINI_VERSION": "19.5"}
+        )
+        
+        worker = PosixInstanceBuildWorker(configuration=config, worker_host=worker_host)
+        worker.start()
+        yield worker
+        worker.stop()
+    
+    def test_fluid_simulation(self, houdini_worker):
+        # Test fluid simulation functionality
+        pass
+    
+    def test_particle_system(self, houdini_worker):
+        # Test particle system functionality  
+        pass
+```
+
+**Key Benefits:**
+
+1. **Fixture Reuse**: Multiple worker fixtures can reuse the same `worker_host` fixture
+2. **Scoped Efficiency**: Module/class-scoped workers amortize setup cost across multiple tests
+3. **Configuration Specialization**: Each fixture can have specialized configurations for different workloads
+4. **Test Organization**: Group related tests with class-scoped fixtures
+5. **Sequential Execution**: pytest automatically handles sequential execution when multiple workers need the same host
+
+**Fixture Execution Order:**
+
+- `worker_host` starts first (function/module/class scoped as needed)
+- Worker fixtures start sequentially, each claiming the host
+- Tests run using the appropriate worker
+- Worker fixtures stop in reverse order, releasing the host
+- `worker_host` stops last, cleaning up the EC2 instance
+
 ## Implementation Notes
 
 ### File Mappings
