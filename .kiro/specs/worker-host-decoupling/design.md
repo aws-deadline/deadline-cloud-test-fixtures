@@ -992,7 +992,7 @@ Unit tests will verify specific behaviors and edge cases:
 
 ### Property-Based Testing
 
-Property-based tests will verify universal properties across many inputs:
+Property-based tests will verify universal properties across many inputs using manual parametrization:
 
 1. **Sequential Configuration Property**: Test that multiple configurations can be applied sequentially to the same host
 2. **Configuration Correctness Property**: Test that applied configurations match expected settings
@@ -1000,6 +1000,12 @@ Property-based tests will verify universal properties across many inputs:
 4. **Delegation Property**: Test that DeadlineWorker correctly delegates to WorkerHost
 5. **Error Diagnostics Property**: Test that errors include appropriate diagnostic information
 6. **Host Ownership Property**: Test that only one worker can claim a host at a time and ownership is properly managed
+
+**Property Test Implementation**: Use `@pytest.mark.parametrize` with comprehensive test cases covering:
+- Edge cases (empty strings, very long strings, special characters)
+- Common values (typical OS names, configuration values)
+- Boundary conditions (minimum/maximum values)
+- Invalid inputs (to test error handling)
 
 ### Integration Testing
 
@@ -1013,9 +1019,9 @@ Integration tests will verify end-to-end functionality:
 ### Testing Framework
 
 - **Unit Tests**: pytest with standard assertions
-- **Property-Based Tests**: Hypothesis (Python property-based testing library)
+- **Property-Based Tests**: pytest with `@pytest.mark.parametrize` for comprehensive input coverage. Will not add a dependency on `hypothesis` for these.
 - **Integration Tests**: pytest with AWS SDK mocking using moto where appropriate
-- **Test Configuration**: Each property-based test should run a minimum of 100 iterations
+- **Test Configuration**: Each property-based test should include 10-15 carefully chosen test cases covering edge cases and common scenarios
 
 ### Test Organization
 
