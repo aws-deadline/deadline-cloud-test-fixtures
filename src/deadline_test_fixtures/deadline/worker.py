@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import abc
-import botocore.client
-import botocore.exceptions
 import glob
 import json
 import logging
@@ -15,15 +13,18 @@ import shutil
 import subprocess
 import tempfile
 import time
-from dataclasses import dataclass, field, InitVar, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Optional, cast, Dict
+from dataclasses import InitVar, dataclass, field, replace
+from typing import TYPE_CHECKING, Any, ClassVar, Dict, Optional, cast
+
+import botocore.client
+import botocore.exceptions
 
 from ..models import (
     PipInstall,
     PosixSessionUser,
 )
+from ..util import call_api, is_instance_not_ready, retry_with_predicate, wait_for
 from .resources import CloudWatchLogEvent, Fleet, WorkerLog
-from ..util import call_api, wait_for, retry_with_predicate, is_instance_not_ready
 
 if TYPE_CHECKING:
     from botocore.paginate import PageIterator, Paginator
@@ -171,7 +172,6 @@ class DeadlineWorkerConfiguration:
 
 @dataclass
 class EC2InstanceWorker(DeadlineWorker):
-
     subnet_id: str
     security_group_id: str
     instance_profile_name: str
@@ -190,8 +190,11 @@ class EC2InstanceWorker(DeadlineWorker):
     instance_id: Optional[str] = field(init=False, default=None)
     worker_id: Optional[str] = field(init=False, default=None)
 
+    USERDATA_SUCCESS_STRING: ClassVar[str] = "Userdata finished successfully"
+    USERDATA_FAILURE_STRING: ClassVar[str] = "Userdata failed to finish"
+
     """
-    Option to override the AMI ID for the EC2 instance. If no override is provided, the default will depend on the subclass being instansiated. 
+    Option to override the AMI ID for the EC2 instance. If no override is provided, the default will depend on the subclass being instansiated.
     """
     override_ami_id: InitVar[Optional[str]] = None
 
@@ -234,6 +237,10 @@ class EC2InstanceWorker(DeadlineWorker):
         raise NotImplementedError("'userdata' was not implemented.")
 
     @abc.abstractmethod
+    def userdata_success_script(self) -> str:
+        raise NotImplementedError(f"'{self.userdata_success_script.__name__}' was not implemented")
+
+    @abc.abstractmethod
     def ebs_devices(self) -> dict[str, int] | None:
         """DeviceName -> VolumeSize (in GiBs) mapping"""
         raise NotImplementedError("'ebs_devices' was not implemented.")
@@ -241,6 +248,10 @@ class EC2InstanceWorker(DeadlineWorker):
     def start(self) -> None:
         s3_files = self._stage_s3_bucket()
         self._launch_instance(s3_files=s3_files)
+
+        success, status_message = self._wait_until_userdata_finishes()
+        assert success, f"Userdata failed:\n{status_message}"
+
         self._setup_worker_agent()
 
     def stop(self) -> None:
@@ -409,8 +420,8 @@ class EC2InstanceWorker(DeadlineWorker):
             )
         except botocore.exceptions.WaiterError as e:  # pragma: no cover
             LOG.warning(f"WaiterError caught for command {command_id}:")
-            LOG.warning(f"\tError reason: {str(e)}")
-            LOG.warning(f"\tWaiter last response: {str(e.last_response)}")
+            LOG.warning(f"\tError reason: {e!s}")
+            LOG.warning(f"\tWaiter last response: {e.last_response!s}")
 
             if isinstance(e, botocore.exceptions.WaiterError) and (
                 "Undeliverable" in str(e) or "Undeliverable" in str(e.last_response)
@@ -420,7 +431,6 @@ class EC2InstanceWorker(DeadlineWorker):
                     f"Unable to deliver command {command_id} to instance {self.instance_id} (received UndeliverableError)."
                 )
                 raise e
-            pass
 
         ssm_command_result = self.ssm_client.get_command_invocation(
             InstanceId=self.instance_id,
@@ -619,6 +629,41 @@ class EC2InstanceWorker(DeadlineWorker):
 
         return self._ami_id
 
+    def _wait_until_userdata_finishes(self) -> tuple[bool, str]:
+        result: CommandResult | None = None
+        success: bool = False
+        LOG.info("Waiting for userdata to finish")
+
+        def get_userdata_result() -> bool:
+            nonlocal result
+            nonlocal success
+            result = self.send_command(self.userdata_success_script())
+
+            if self.USERDATA_SUCCESS_STRING in str(result):
+                success = True
+                return True
+
+            if self.USERDATA_FAILURE_STRING in str(result):
+                success = False
+                return True
+
+            return False
+
+        # Raises TimeoutError if the userdata status cannot be fetched in
+        # the given timeframe.
+        wait_for(
+            description="getting the result of userdata",
+            predicate=get_userdata_result,
+            interval_s=5,
+            max_retries=60,
+        )
+
+        LOG.info(
+            "Userdata finished %s.",
+            "successfully" if success else "unsuccessfully",
+        )
+        return success, str(result)
+
 
 @dataclass
 class WindowsInstanceWorkerBase(EC2InstanceWorker):
@@ -630,6 +675,10 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
     2. A host that already has the worker agent, job/agent users, and the like baked into
        the host AMI in a location & manner that may differ from case (1).
     """
+
+    SIGNAL_USER_DATA_DIR: ClassVar[str] = "C:\\signal_user_data_finished"
+    SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME: ClassVar[str] = f"{SIGNAL_USER_DATA_DIR}\\success"
+    SIGNAL_USER_DATA_FAILED_FILE_NAME: ClassVar[str] = f"{SIGNAL_USER_DATA_DIR}\\failed"
 
     def ebs_devices(self) -> dict[str, int] | None:
         """DeviceName -> VolumeSize (in GiBs) mapping"""
@@ -794,10 +843,18 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
                 + f"--fleet-id {config.fleet.id} "
                 + f"--region {config.region} "
                 + f"--user {config.agent_user} "
-                + (f"--password $({self.get_windows_user_secret_cmd(secret_id=config.windows_user_secret)}) " if config.windows_user_secret else "")
+                + (
+                    f"--password $({self.get_windows_user_secret_cmd(secret_id=config.windows_user_secret)}) "
+                    if config.windows_user_secret
+                    else ""
+                )
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
                 + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
-                + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
+                + (
+                    f"--session-root-dir {config.session_root_dir} "
+                    if config.session_root_dir is not None
+                    else ""
+                )
             ),
             # fmt: on
         ]
@@ -811,6 +868,22 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
             cmds.append('Start-Service -Name "DeadlineWorker"')
 
         return "; ".join(cmds)
+
+    def userdata_success_script(self) -> str:
+        return f"""
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+Set-PSDebug -Trace 1
+if (Test-Path "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}") {{
+    echo "{self.USERDATA_SUCCESS_STRING}"
+    exit 0
+}}
+if (Test-Path "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}") {{
+    echo "{self.USERDATA_FAILURE_STRING}"
+    cat "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}"
+    exit 0
+}}
+"""
 
     def userdata(self, s3_files) -> str:
         copy_s3_command = ""
@@ -834,19 +907,33 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
         configure_job_users = "\n".join(job_users_cmds)
 
         userdata = f"""<powershell>
-$ProgressPreference = 'SilentlyContinue'
-Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" -OutFile "C:\\python-3.12.10-amd64.exe"
-$installerHash=(Get-FileHash "C:\\python-3.12.10-amd64.exe" -Algorithm "MD5")
-$expectedHash="5eddb0b6f12c852725de071ae681dde4"
-if ($installerHash.Hash -ne $expectedHash) {{ throw "Could not verify Python installer." }}
-Start-Process -FilePath "C:\\python-3.12.10-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
-Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\\AWSCLIV2.msi"
-Start-Process msiexec.exe -ArgumentList "/i C:\\AWSCLIV2.msi /quiet" -Wait
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
-$secret = aws secretsmanager get-secret-value --secret-id WindowsPasswordSecret --query SecretString --output text | ConvertFrom-Json
-$password = ConvertTo-SecureString -String $($secret.password) -AsPlainText -Force
-{copy_s3_command}
-{configure_job_users}
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+Set-PSDebug -Trace 1
+$successDir="{self.SIGNAL_USER_DATA_DIR}"
+mkdir $successDir -Force
+try {{
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe" -OutFile "C:\\python-3.12.10-amd64.exe"
+    $installerHash=(Get-FileHash "C:\\python-3.12.10-amd64.exe" -Algorithm "MD5")
+    $expectedHash="5eddb0b6f12c852725de071ae681dde4"
+    if ($installerHash.Hash -ne $expectedHash) {{ throw "Could not verify Python installer." }}
+    Start-Process -FilePath "C:\\python-3.12.10-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
+    Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\\AWSCLIV2.msi"
+    Start-Process msiexec.exe -ArgumentList "/i C:\\AWSCLIV2.msi /quiet" -Wait
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
+    $secret = aws secretsmanager get-secret-value --secret-id WindowsPasswordSecret --query SecretString --output text | ConvertFrom-Json
+    $password = ConvertTo-SecureString -String $($secret.password) -AsPlainText -Force
+    {copy_s3_command}
+    {configure_job_users}
+}} catch {{
+    $_ | Out-File "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}"
+    cat "C:\\ProgramData\\Amazon\\EC2-Windows\\Launch\\Log\\UserdataExecution.log" >> "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}"
+    exit 1
+}}
+
+New-Item -Path "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}" -ItemType File -Force
+
 </powershell>"""
 
         return userdata
@@ -871,6 +958,10 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
        the host AMI in a location & manner that may differ from case (1).
     """
 
+    SIGNAL_USER_DATA_SUCCESS_DIR: ClassVar[str] = "/var/tmp/signal_user_data_finished"
+    SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME: ClassVar[str] = f"{SIGNAL_USER_DATA_SUCCESS_DIR}/success"
+    SIGNAL_USER_DATA_FAILED_FILE_NAME: ClassVar[str] = f"{SIGNAL_USER_DATA_SUCCESS_DIR}/failed"
+
     def ebs_devices(self) -> dict[str, int] | None:
         """DeviceName -> VolumeSize (in GiBs) mapping"""
         # defaults to 30GB to match SMF, aws gives 8GB by default
@@ -882,7 +973,7 @@ class PosixInstanceWorkerBase(EC2InstanceWorker):
     def send_command(
         self, command: str, ssm_waiter_config: dict[str, int] = DEFAULT_WAITER_CONFIG
     ) -> CommandResult:
-        return super().send_command("set -eou pipefail; " + command, ssm_waiter_config)
+        return super().send_command("set -euxo pipefail; " + command, ssm_waiter_config)
 
     def _setup_worker_agent(self) -> None:
         assert self.instance_id
@@ -1035,7 +1126,11 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
                 + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
                 + f"{'--no-install-service ' if config.no_install_service else ''}"
                 + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
-                + (f"--session-root-dir {config.session_root_dir} " if config.session_root_dir is not None else '')
+                + (
+                    f"--session-root-dir {config.session_root_dir} "
+                    if config.session_root_dir is not None
+                    else ""
+                )
             ),
             # fmt: on
             f"runuser --login {self.configuration.agent_user} --command 'echo \"source /opt/deadline/worker/bin/activate\" >> $HOME/.bashrc'",
@@ -1058,6 +1153,19 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
 
         return " && ".join(cmds)
 
+    def userdata_success_script(self) -> str:
+        return f"""
+if [[ -f "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}" ]]; then
+    echo "{self.USERDATA_SUCCESS_STRING}"
+    exit 0
+fi
+if [[ -f "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}" ]]; then
+    echo "{self.USERDATA_FAILURE_STRING}"
+    cat "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}"
+    exit 0
+fi
+"""
+
     def userdata(self, s3_files) -> str:
         copy_s3_command = ""
         job_users_cmds = []
@@ -1067,7 +1175,7 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
                 [f"aws s3 cp {s3_uri} {dst} && chmod o+rx {dst}" for s3_uri, dst in s3_files]
             )
         for job_user in self.configuration.job_users:
-            job_users_cmds.append(f"groupadd {job_user.group}")
+            job_users_cmds.append(f"groupadd -f {job_user.group}")
             job_users_cmds.append(
                 f"useradd --create-home --system --shell=/bin/bash --groups={self.configuration.job_user_group} -g {job_user.group} {job_user.user}"
             )
@@ -1076,13 +1184,26 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
 
         userdata = f"""#!/bin/bash
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-set -x
-groupadd --system {self.configuration.job_user_group}
+set -euxo pipefail
+success_dir="{self.SIGNAL_USER_DATA_SUCCESS_DIR}"
+mkdir $success_dir -p
+
+signal_failure() {{
+    failure_file="{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}"
+    cat /var/log/cloud-init-output.log > $failure_file
+    exit 1
+}}
+
+trap signal_failure ERR
+
+groupadd -f --system {self.configuration.job_user_group}
 {configure_job_users}
 {copy_s3_command}
 
 mkdir /opt/deadline
 python3 -m venv /opt/deadline/worker
+
+touch "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}"
 """
 
         return userdata
@@ -1125,7 +1246,7 @@ class DockerContainerWorker(DeadlineWorker):
             ),
         }
 
-        LOG.info(f"Staging Docker build context directory {str(self._tmpdir)}")
+        LOG.info(f"Staging Docker build context directory {self._tmpdir!s}")
         shutil.copytree(DOCKER_CONTEXT_DIR, str(self._tmpdir), dirs_exist_ok=True)
 
         if self.configuration.file_mappings:
