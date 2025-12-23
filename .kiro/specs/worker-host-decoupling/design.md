@@ -208,6 +208,10 @@ class EC2WorkerHost(WorkerHost):
     instance_id: Optional[str] = field(init=False, default=None)
     override_ami_id: InitVar[Optional[str]] = None
     
+    # Userdata success/failure constants
+    USERDATA_SUCCESS_STRING: ClassVar[str] = "Userdata finished successfully"
+    USERDATA_FAILURE_STRING: ClassVar[str] = "Userdata failed to finish"
+    
     @abc.abstractmethod
     def ami_ssm_param_name(self) -> str:
         """Return the SSM parameter name for the AMI."""
@@ -224,8 +228,29 @@ class EC2WorkerHost(WorkerHost):
         pass
     
     @abc.abstractmethod
+    def userdata_success_script(self) -> str:
+        """Generate script to check if userdata finished successfully."""
+        pass
+    
+    @abc.abstractmethod
     def ebs_devices(self) -> dict[str, int] | None:
         """Return EBS device mappings."""
+        pass
+    
+    def _do_start(self) -> None:
+        """Start the EC2 instance and wait for userdata to complete."""
+        self._launch_instance()
+        self._wait_until_userdata_finishes()
+    
+    def _launch_instance(self) -> None:
+        """Launch the EC2 instance."""
+        # Implementation launches EC2 instance with userdata
+        pass
+    
+    def _wait_until_userdata_finishes(self) -> None:
+        """Wait for userdata to complete successfully."""
+        # Uses userdata_success_script() to check completion status
+        # Raises WorkerHostError if userdata fails or times out
         pass
 ```
 
@@ -238,11 +263,33 @@ OS-specific implementations of EC2 worker hosts:
 class WindowsEC2WorkerHost(EC2WorkerHost):
     """Windows-specific EC2 worker host."""
     
+    # Windows-specific userdata signaling paths
+    SIGNAL_USER_DATA_DIR: ClassVar[str] = "C:\\signal_user_data_finished"
+    SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME: ClassVar[str] = f"{SIGNAL_USER_DATA_DIR}\\success"
+    SIGNAL_USER_DATA_FAILED_FILE_NAME: ClassVar[str] = f"{SIGNAL_USER_DATA_DIR}\\failed"
+    
     def _operating_system(self) -> str:
         return "windows"
     
     def ssm_document_name(self) -> str:
         return "AWS-RunPowerShellScript"
+    
+    def userdata_success_script(self) -> str:
+        """Generate PowerShell script to check userdata completion status."""
+        return f"""
+$ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
+Set-PSDebug -Trace 1
+if (Test-Path "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}") {{
+    echo "{self.USERDATA_SUCCESS_STRING}"
+    exit 0
+}}
+if (Test-Path "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}") {{
+    echo "{self.USERDATA_FAILURE_STRING}"
+    cat "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}"
+    exit 0
+}}
+"""
     
     def ebs_devices(self) -> dict[str, int] | None:
         return {"/dev/sda1": 60}
@@ -253,11 +300,30 @@ class WindowsEC2WorkerHost(EC2WorkerHost):
 class PosixEC2WorkerHost(EC2WorkerHost):
     """POSIX (Linux)-specific EC2 worker host."""
     
+    # POSIX-specific userdata signaling paths
+    SIGNAL_USER_DATA_SUCCESS_DIR: ClassVar[str] = "/var/tmp/signal_user_data_finished"
+    SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME: ClassVar[str] = f"{SIGNAL_USER_DATA_SUCCESS_DIR}/success"
+    SIGNAL_USER_DATA_FAILED_FILE_NAME: ClassVar[str] = f"{SIGNAL_USER_DATA_SUCCESS_DIR}/failed"
+    
     def _operating_system(self) -> str:
         return "posix"
     
     def ssm_document_name(self) -> str:
         return "AWS-RunShellScript"
+    
+    def userdata_success_script(self) -> str:
+        """Generate bash script to check userdata completion status."""
+        return f"""
+if [[ -f "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}" ]]; then
+    echo "{self.USERDATA_SUCCESS_STRING}"
+    exit 0
+fi
+if [[ -f "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}" ]]; then
+    echo "{self.USERDATA_FAILURE_STRING}"
+    cat "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}"
+    exit 0
+fi
+"""
     
     def ebs_devices(self) -> dict[str, int] | None:
         return {"/dev/xvda": 30}
@@ -808,38 +874,38 @@ This section maps each requirement from the requirements document to the design 
 **Requirement 1: Reuse host with different worker agent configurations**
 - Architecture: WorkerHost abstraction separates host from agent lifecycle
 - Components: `start()` and `stop()` methods enable sequential configurations
-- Properties: 1, 2, 3, 4, 13
+- Properties: 1, 2, 3, 4, 5, 14
 
 **Requirement 2: Separate control over host and agent lifecycle**
 - Architecture: Independent WorkerHost and DeadlineWorker lifecycle methods
 - Components: WorkerHost (`start()`, `stop()`, `send_command()`) and DeadlineWorker (`start()`, `stop()`)
-- Properties: 1, 2, 5, 13, 14, 15
+- Properties: 1, 2, 6, 14, 15, 16
 
 **Requirement 3: Host-only fixtures**
 - Components: New `worker_host` fixture provides host without agent
 - Pytest Fixtures: `worker_host` and `worker` fixtures with proper lifecycle management
-- Properties: 6, 7, 14
+- Properties: 7, 8, 15
 
 **Requirement 4: Separation of concerns architecture**
 - Architecture: Composition-based design with WorkerHost interface
 - Components: WorkerHost handles host operations, DeadlineWorker handles agent operations
-- Properties: 3, 5, 14, 16, 17, 18
+- Properties: 4, 6, 15, 17, 18, 19
 
 **Requirement 5: Configure worker agents with different settings**
 - Components: `DeadlineWorkerConfiguration` object, `stop()` removes state, file mappings transferred per-worker
 - Data Models: DeadlineWorkerConfiguration (file_mappings behavior updated)
-- Properties: 2, 6, 9, 19
+- Properties: 3, 7, 10, 20
 
 **Requirement 6: Clear error messages**
 - Error Handling: Separate error types for host and agent failures with diagnostics
 - Components: Error handling in WorkerHost and DeadlineWorker
-- Properties: 8, 10, 11
+- Properties: 2, 9, 11, 12
 
 **Requirement 7: Windows and POSIX support**
 - Architecture: OS-specific WorkerHost implementations (WindowsEC2WorkerHost, PosixEC2WorkerHost)
 - Components: OS-specific behavior split between WorkerHost and DeadlineWorker
 - Extensibility: New WorkerHost implementations can be added without modifying agent code
-- Properties: 12, 20
+- Properties: 13, 21
 
 
 
@@ -852,79 +918,83 @@ This section maps each requirement from the requirements document to the design 
 *For any* EC2 worker host (Windows or POSIX), creating and starting a worker host should not result in any worker agent processes running or worker agent configuration files existing on the host.
 **Validates: Requirements 1.1, 2.3**
 
-### Property 2: Sequential worker agent configuration
+### Property 2: Userdata completion validation
+*For any* EC2 worker host, starting the worker host should wait for userdata to complete successfully and raise a WorkerHostError if userdata fails or times out. The raised error should include userdata execution logs.
+**Validates: Requirements 2.1, 6.1**
+
+### Property 3: Sequential worker agent configuration
 *For any* worker host and any two different worker agent configurations, applying configuration A, stopping the agent, then applying configuration B should result in a working worker agent with configuration B's settings and no remnants of configuration A.
 **Validates: Requirements 1.2, 1.4, 2.5, 5.4**
 
-### Property 3: Worker agent configuration correctness
+### Property 4: Worker agent configuration correctness
 *For any* valid DeadlineWorkerConfiguration and any worker host, applying the configuration should result in a worker agent with settings that match the configuration (farm ID, fleet ID, region, user settings, etc.).
 **Validates: Requirements 1.3, 4.3, 5.3**
 
-### Property 4: Worker host cleanup independence
+### Property 5: Worker host cleanup independence
 *For any* worker host with a running worker agent, stopping the worker host should succeed and clean up host resources regardless of whether the worker agent was stopped first.
 **Validates: Requirements 1.5**
 
-### Property 5: Worker agent stop preserves host
+### Property 6: Worker agent stop preserves host
 *For any* worker host with a running worker agent, stopping the worker agent should leave the worker host in a running state and able to accept commands.
 **Validates: Requirements 2.4, 4.4**
 
-### Property 6: Method delegation correctness
+### Property 7: Method delegation correctness
 *For any* EC2InstanceWorker instance and any host operation (send_command), invoking the operation on the DeadlineWorker should result in the corresponding operation being invoked on the composed WorkerHost instance.
 **Validates: Requirements 4.2**
 
-### Property 7: Fixture lifecycle management
+### Property 8: Fixture lifecycle management
 *For any* worker created through the worker fixture, the fixture should automatically start both the worker host and worker agent, and automatically stop both when the fixture scope ends.
 **Validates: Requirements 3.5**
 
-### Property 8: Worker agent state cleanup
+### Property 9: Worker agent state cleanup
 *For any* worker host with a running worker agent, stopping the worker agent should remove all worker agent state files (worker.json, configuration files, etc.) from the worker host.
 **Validates: Requirements 6.2**
 
-### Property 9: Worker agent service registration
+### Property 10: Worker agent service registration
 *For any* worker host with a worker agent, reconfiguring a different worker with a different configuration should result in a new worker ID being created with the Deadline Cloud service and the old worker ID being deleted.
-**Validates: Requirements 6.5**
+**Validates: Requirements 5.5**
 
-### Property 10: Error diagnostics inclusion
+### Property 11: Error diagnostics inclusion
 *For any* operation (worker host or worker agent) that fails, the raised exception should contain diagnostic information specific to the type of operation (host state for host operations, agent logs for agent operations, command output for command failures).
 **Validates: Requirements 6.1, 6.2, 6.3, 6.4**
 
-### Property 11: Error source distinction
+### Property 12: Error source distinction
 *For any* failure, the error message should clearly indicate whether the failure originated from the worker host layer or the worker agent layer.
 **Validates: Requirements 6.5**
 
-### Property 12: Operating system-agnostic worker agent operations
+### Property 13: Operating system-agnostic worker agent operations
 *For any* worker agent operation (install, configure, start, stop, get_worker_id) and any EC2 worker host operating system (Windows or POSIX), the operation should succeed and produce the same logical result regardless of the operating system.
 **Validates: Requirements 7.4**
 
-### Property 13: Host reuse independence
+### Property 14: Host reuse independence
 *For any* DeadlineWorker instance with a WorkerHost, stopping the worker agent should not stop the worker host, leaving it available for reuse by other workers.
 **Validates: Requirements 1.2, 2.4, 4.4**
 
-### Property 14: WorkerHost interface completeness
+### Property 15: WorkerHost interface completeness
 *For any* WorkerHost implementation, the interface should provide methods for starting the host, stopping the host, and sending commands to the host.
 **Validates: Requirements 2.1, 3.2, 4.1**
 
-### Property 15: Worker agent interface completeness
+### Property 16: Worker agent interface completeness
 *For any* DeadlineWorker implementation, the interface should provide methods for starting (which installs, configures, and starts the agent), stopping (which stops and cleans up the agent), and retrieving the worker ID of the worker agent.
 **Validates: Requirements 2.2**
 
-### Property 16: WorkerHost isolation from agent logic
+### Property 17: WorkerHost isolation from agent logic
 *For any* WorkerHost implementation, the implementation should not contain any worker agent configuration logic (farm ID, fleet ID, worker agent installation, etc.).
 **Validates: Requirements 4.3**
 
-### Property 17: EC2InstanceWorker isolation from host provisioning
+### Property 18: EC2InstanceWorker isolation from host provisioning
 *For any* EC2InstanceWorker implementation, the implementation should not contain any worker host provisioning logic (EC2 instance creation, AMI selection, etc.) and should delegate all host operations to the composed WorkerHost.
 **Validates: Requirements 4.4**
 
-### Property 18: Composition architecture
+### Property 19: Composition architecture
 *For any* EC2InstanceWorker instance, the instance should contain a WorkerHost instance and delegate host operations to it rather than inheriting host functionality.
 **Validates: Requirements 4.5**
 
-### Property 19: Configuration acceptance
+### Property 20: Configuration acceptance
 *For any* worker agent setup operation, the operation should accept a DeadlineWorkerConfiguration object containing all necessary configuration parameters.
 **Validates: Requirements 5.1**
 
-### Property 20: Operating system support preservation
+### Property 21: Operating system support preservation
 *For any* EC2 worker functionality (Windows or POSIX) that existed before refactoring, the functionality should continue to work after refactoring with equivalent behavior.
 **Validates: Requirements 7.1, 7.2, 7.3, 7.4**
 
@@ -1000,6 +1070,8 @@ Property-based tests will verify universal properties across many inputs using m
 4. **Delegation Property**: Test that DeadlineWorker correctly delegates to WorkerHost
 5. **Error Diagnostics Property**: Test that errors include appropriate diagnostic information
 6. **Host Ownership Property**: Test that only one worker can claim a host at a time and ownership is properly managed
+
+**Omitted Property Tests**: Property tests for fixture behavior (Properties 8 and 15) are intentionally omitted from the implementation. Testing pytest fixtures with property-based testing is complex and provides limited value since fixtures are primarily infrastructure code with well-defined, simple behaviors that are better validated through integration tests and manual verification.
 
 **Property Test Implementation**: Use `@pytest.mark.parametrize` with comprehensive test cases covering:
 - Edge cases (empty strings, very long strings, special characters)
