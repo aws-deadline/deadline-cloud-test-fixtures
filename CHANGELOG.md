@@ -1,3 +1,11 @@
+## 0.18.9 (2026-01-19)
+
+
+### Features
+* provide importable hook for cleaning up leftover JobAttachmentManager queues (#256) ([`51c6f92`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/51c6f9297c58eec1ec180c16bcc0b53fde2f759e))
+
+
+
 ## 0.18.8 (2025-12-08)
 
 
