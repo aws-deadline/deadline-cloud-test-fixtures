@@ -1,3 +1,10 @@
+## 0.18.10 (2026-01-22)
+
+
+### Bug Fixes
+* Unintentional cleanup of leftover JobAttachmentManager queues from other concurrent test runs (#259) ([`4d69e8d`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/4d69e8dd175a2cbb6cc88dd34d004c4039080a16))
+
+
 ## 0.18.9 (2026-01-19)
 
 
