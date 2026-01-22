@@ -1,21 +1,21 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 from __future__ import annotations
 
-import os
 from dataclasses import InitVar, dataclass, field
-from uuid import uuid4
-
+import os
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError, WaiterError
 
-from .deadline import Farm, Queue
 from .deadline.client import DeadlineClient
-from .models import JobAttachmentSettings
+from .deadline import (
+    Farm,
+    Queue,
+)
 
-# Queue names created by JobAttachmentManager for integration tests.
-# These are used by the orphan cleanup hook in pytest_hooks.py.
-JA_TEST_QUEUE_NAME = "job_attachments_test_queue"
-JA_TEST_QUEUE_NO_SETTINGS_NAME = "job_attachments_test_no_settings_queue"
+from .models import (
+    JobAttachmentSettings,
+)
+from uuid import uuid4
 
 
 @dataclass
@@ -47,7 +47,7 @@ class JobAttachmentManager:
 
             self.queue = Queue.create(
                 client=self.deadline_client,
-                display_name=JA_TEST_QUEUE_NAME,
+                display_name="job_attachments_test_queue",
                 farm=Farm(self.farm_id),
                 job_attachments=JobAttachmentSettings(
                     bucket_name=self.bucket_name, root_prefix=self.bucket_root_prefix
@@ -55,7 +55,7 @@ class JobAttachmentManager:
             )
             self.queue_with_no_settings = Queue.create(
                 client=self.deadline_client,
-                display_name=JA_TEST_QUEUE_NO_SETTINGS_NAME,
+                display_name="job_attachments_test_no_settings_queue",
                 farm=Farm(self.farm_id),
             )
 
