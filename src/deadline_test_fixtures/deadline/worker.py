@@ -914,11 +914,11 @@ $successDir="{self.SIGNAL_USER_DATA_DIR}"
 mkdir $successDir -Force
 try {{
     $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.13.11/python-3.13.11-amd64.exe" -OutFile "C:\\python-3.13.11-amd64.exe"
-    $installerHash=(Get-FileHash "C:\\python-3.13.11-amd64.exe" -Algorithm "MD5")
-    $expectedHash="379a32861f9f0a327f9fa9c163455574"
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.13.13/python-3.13.13-amd64.exe" -OutFile "C:\\python-3.13.13-amd64.exe"
+    $installerHash=(Get-FileHash "C:\\python-3.13.13-amd64.exe" -Algorithm "MD5")
+    $expectedHash="8ca47ead911a0d5e136e1a6cf98fe23c"
     if ($installerHash.Hash -ne $expectedHash) {{ throw "Could not verify Python installer." }}
-    Start-Process -FilePath "C:\\python-3.13.11-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
+    Start-Process -FilePath "C:\\python-3.13.13-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
     Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\\AWSCLIV2.msi"
     Start-Process msiexec.exe -ArgumentList "/i C:\\AWSCLIV2.msi /quiet" -Wait
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
