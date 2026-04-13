@@ -22,6 +22,7 @@ from deadline_test_fixtures import (
     PipInstall,
     PosixInstanceBuildWorker,
     S3Object,
+    WindowsInstanceBuildWorker,
 )
 from deadline_test_fixtures.deadline import worker as mod
 
@@ -87,60 +88,75 @@ def worker_config(region: str) -> DeadlineWorkerConfiguration:
     )
 
 
+def describe_instance(instance_id: str) -> Any:
+    """Shared helper to describe an EC2 instance by ID."""
+    ec2_client = boto3.client("ec2")
+    response = ec2_client.describe_instances(InstanceIds=[instance_id])
+    reservations = response["Reservations"]
+    assert len(reservations) == 1
+    instances = reservations[0]["Instances"]
+    assert len(instances) == 1
+    return instances[0]
+
+
+def start_worker_with_mocks(worker):
+    """Start a worker with get_worker_id and userdata mocked out."""
+    with (
+        patch.object(
+            worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
+        ),
+        patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
+    ):
+        worker.start()
+
+
+@pytest.fixture
+def vpc_id() -> str:
+    return boto3.client("ec2").create_vpc(CidrBlock="10.0.0.0/28")["Vpc"]["VpcId"]
+
+
+@pytest.fixture
+def subnet_id(vpc_id: str) -> str:
+    return boto3.client("ec2").create_subnet(
+        VpcId=vpc_id,
+        CidrBlock="10.0.0.0/28",
+    )[
+        "Subnet"
+    ]["SubnetId"]
+
+
+@pytest.fixture
+def security_group_id(vpc_id: str) -> str:
+    return boto3.client("ec2").create_security_group(
+        VpcId=vpc_id,
+        Description="Testing",
+        GroupName="TestSG",
+    )["GroupId"]
+
+
+@pytest.fixture
+def instance_profile() -> Any:
+    return boto3.client("iam").create_instance_profile(InstanceProfileName="instance-profile")[
+        "InstanceProfile"
+    ]
+
+
+@pytest.fixture
+def instance_profile_name(instance_profile: Any) -> str:
+    return instance_profile["InstanceProfileName"]
+
+
+@pytest.fixture
+def bootstrap_bucket_name(region: str) -> str:
+    name = "bootstrap-bucket"
+    kwargs: dict[str, Any] = {"Bucket": name}
+    if region != "us-east-1":
+        kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
+    boto3.client("s3").create_bucket(**kwargs)
+    return name
+
+
 class TestPosixInstanceBuildWorker:
-    @staticmethod
-    def describe_instance(instance_id: str) -> Any:
-        ec2_client = boto3.client("ec2")
-        response = ec2_client.describe_instances(InstanceIds=[instance_id])
-
-        reservations = response["Reservations"]
-        assert len(reservations) == 1
-
-        instances = reservations[0]["Instances"]
-        assert len(instances) == 1
-
-        return instances[0]
-
-    @pytest.fixture
-    def vpc_id(self) -> str:
-        return boto3.client("ec2").create_vpc(CidrBlock="10.0.0.0/28")["Vpc"]["VpcId"]
-
-    @pytest.fixture
-    def subnet_id(self, vpc_id: str) -> str:
-        return boto3.client("ec2").create_subnet(
-            VpcId=vpc_id,
-            CidrBlock="10.0.0.0/28",
-        )[
-            "Subnet"
-        ]["SubnetId"]
-
-    @pytest.fixture
-    def security_group_id(self, vpc_id: str) -> str:
-        return boto3.client("ec2").create_security_group(
-            VpcId=vpc_id,
-            Description="Testing",
-            GroupName="TestSG",
-        )["GroupId"]
-
-    @pytest.fixture
-    def instance_profile(self) -> Any:
-        return boto3.client("iam").create_instance_profile(InstanceProfileName="instance-profile")[
-            "InstanceProfile"
-        ]
-
-    @pytest.fixture
-    def instance_profile_name(self, instance_profile: Any) -> str:
-        return instance_profile["InstanceProfileName"]
-
-    @pytest.fixture
-    def bootstrap_bucket_name(self, region: str) -> str:
-        name = "bootstrap-bucket"
-        kwargs: dict[str, Any] = {"Bucket": name}
-        if region != "us-east-1":
-            kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
-        boto3.client("s3").create_bucket(**kwargs)
-        return name
-
     @pytest.fixture
     def worker(
         self,
@@ -363,7 +379,7 @@ class TestPosixInstanceBuildWorker:
         # THEN
         assert worker.instance_id is not None
 
-        instance = TestPosixInstanceBuildWorker.describe_instance(worker.instance_id)
+        instance = describe_instance(worker.instance_id)
         assert instance["ImageId"] == worker.ami_id
         assert instance["State"]["Name"] == "running"
         assert instance["SubnetId"] == subnet_id
@@ -381,23 +397,17 @@ class TestPosixInstanceBuildWorker:
     def test_stop(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         # WHEN
-        with (
-            patch.object(
-                worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
-            ),
-            patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
-        ):
-            worker.start()
+        start_worker_with_mocks(worker)
         instance_id = worker.instance_id
         assert instance_id is not None
 
-        instance = TestPosixInstanceBuildWorker.describe_instance(instance_id)
+        instance = describe_instance(instance_id)
         assert instance["State"]["Name"] == "running"
 
         worker.stop()
 
         # THEN
-        instance = TestPosixInstanceBuildWorker.describe_instance(instance_id)
+        instance = describe_instance(instance_id)
         assert instance["State"]["Name"] == "terminated"
         assert worker.instance_id is None
 
@@ -405,14 +415,7 @@ class TestPosixInstanceBuildWorker:
         def test_sends_command(self, worker: PosixInstanceBuildWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
-            # WHEN
-            with (
-                patch.object(
-                    worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
-                ),
-                patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
-            ):
-                worker.start()
+            start_worker_with_mocks(worker)
 
             # WHEN
             with patch.object(
@@ -430,14 +433,7 @@ class TestPosixInstanceBuildWorker:
         def test_retries_when_instance_not_ready(self, worker: PosixInstanceBuildWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
-            # WHEN
-            with (
-                patch.object(
-                    worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
-                ),
-                patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
-            ):
-                worker.start()
+            start_worker_with_mocks(worker)
             real_send_command = worker.ssm_client.send_command
 
             call_count = 0
@@ -471,14 +467,7 @@ class TestPosixInstanceBuildWorker:
         def test_raises_any_other_error(self, worker: PosixInstanceBuildWorker) -> None:
             # GIVEN
             cmd = 'echo "Hello world"'
-            # WHEN
-            with (
-                patch.object(
-                    worker, "get_worker_id", return_value="worker-7c3377ec9eba444bb51cc7da18463081"
-                ),
-                patch.object(worker, "_wait_until_userdata_finishes", return_value=(True, "")),
-            ):
-                worker.start()
+            start_worker_with_mocks(worker)
             err = ClientError({"Error": {"Code": "SomethingWentWrong"}}, "SendCommand")
 
             # WHEN
@@ -688,3 +677,450 @@ class TestDockerContainerWorker:
 
         # THEN
         assert result == worker_id
+
+
+class TestWindowsInstanceBuildWorker:
+    FAKE_AMI_ID = "ami-12345678901234567"
+
+    @pytest.fixture
+    def windows_worker_config(self, region: str) -> DeadlineWorkerConfiguration:
+        return DeadlineWorkerConfiguration(
+            farm_id="farm-123",
+            fleet=Fleet(id="fleet_123", farm=Farm(id="farm-123")),
+            region=region,
+            job_user="test-user",
+            job_user_group="test-group",
+            allow_shutdown=False,
+            worker_agent_install=PipInstall(
+                requirement_specifiers=["deadline-cloud-worker-agent"],
+                codeartifact=CodeArtifactRepositoryInfo(
+                    region=region,
+                    domain="test-domain",
+                    domain_owner="123456789123",
+                    repository="test-repository",
+                ),
+            ),
+            file_mappings=[
+                ("C:\\tmp\\file1.txt", "C:\\Users\\test-user\\file1.txt"),
+                ("C:\\packages\\manifest.json", "C:\\tmp\\manifest.json"),
+            ],
+            service_model_path="C:\\path\\to\\service-2.json",
+            windows_job_users=["job-user"],
+        )
+
+    @pytest.fixture
+    def worker(
+        self,
+        windows_worker_config: DeadlineWorkerConfiguration,
+        subnet_id: str,
+        security_group_id: str,
+        instance_profile_name: str,
+        bootstrap_bucket_name: str,
+    ) -> WindowsInstanceBuildWorker:
+        # moto doesn't have the Windows AMI SSM parameter pre-seeded,
+        # so we use override_ami_id to bypass the SSM lookup.
+        return WindowsInstanceBuildWorker(
+            subnet_id=subnet_id,
+            security_group_id=security_group_id,
+            instance_profile_name=instance_profile_name,
+            bootstrap_bucket_name=bootstrap_bucket_name,
+            s3_client=boto3.client("s3"),
+            ec2_client=boto3.client("ec2"),
+            ssm_client=boto3.client("ssm"),
+            deadline_client=boto3.client("deadline"),
+            configuration=windows_worker_config,
+            instance_type="t3.micro",
+            instance_shutdown_behavior="terminate",
+            override_ami_id=self.FAKE_AMI_ID,
+        )
+
+    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    def test_start(self, worker: WindowsInstanceBuildWorker) -> None:
+        # GIVEN
+        s3_files = [
+            ("s3://bucket/key", "C:\\tmp\\key"),
+            ("s3://bucket/tmp/file", "C:\\tmp\\file"),
+        ]
+        with (
+            patch.object(worker, "_stage_s3_bucket", return_value=s3_files) as mock_stage_s3_bucket,
+            patch.object(worker, "_launch_instance") as mock_launch_instance,
+            patch.object(worker, "_setup_worker_agent") as mock_setup_worker_agent,
+            patch.object(
+                worker, "_wait_until_userdata_finishes", return_value=(True, "")
+            ) as mock_wait_until_userdata_finishes,
+            patch.object(
+                worker,
+                "get_worker_id",
+                return_value=CommandResult(
+                    exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+            ),
+        ):
+            # WHEN
+            worker.start()
+
+        # THEN
+        mock_stage_s3_bucket.assert_called_once()
+        mock_launch_instance.assert_called_once_with(s3_files=s3_files)
+        mock_setup_worker_agent.assert_called_once()
+        mock_wait_until_userdata_finishes.assert_called_once()
+
+    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    def test_start_userdata_successful(self, worker: WindowsInstanceBuildWorker) -> None:
+        # GIVEN
+        s3_files = [
+            ("s3://bucket/key", "C:\\tmp\\key"),
+        ]
+        ssm_send_command_return_value = {
+            "Command": {"CommandId": "37c7a933-5e67-4cee-a36e-12e1e3a51237"}
+        }
+        ssm_get_command_invocation_return_value = {
+            "ResponseCode": 0,
+            "StandardOutputContent": WindowsInstanceBuildWorker.USERDATA_SUCCESS_STRING,
+            "StandardErrorContent": "",
+        }
+
+        with (
+            patch.object(worker, "_stage_s3_bucket", return_value=s3_files),
+            patch.object(worker, "_launch_instance"),
+            patch.object(worker, "_setup_worker_agent") as mock_setup_worker_agent,
+            patch.object(
+                worker.ssm_client, "send_command", return_value=ssm_send_command_return_value
+            ) as mock_send_command,
+            patch.object(
+                worker.ssm_client,
+                "get_command_invocation",
+                return_value=ssm_get_command_invocation_return_value,
+            ) as mock_get_command_invocation,
+            patch.object(worker.ssm_client, "get_waiter"),
+            patch.object(
+                worker,
+                "get_worker_id",
+                return_value=CommandResult(
+                    exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+            ),
+        ):
+            # WHEN
+            worker.start()
+
+        # THEN
+        mock_setup_worker_agent.assert_called_once()
+        mock_send_command.assert_called_once()
+        mock_get_command_invocation.assert_called_once()
+
+    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    def test_start_userdata_unsuccessful(self, worker: WindowsInstanceBuildWorker) -> None:
+        # GIVEN
+        s3_files = [
+            ("s3://bucket/key", "C:\\tmp\\key"),
+        ]
+        ssm_send_command_return_value = {
+            "Command": {"CommandId": "37c7a933-5e67-4cee-a36e-12e1e3a51237"}
+        }
+        failure_content = (
+            f"{WindowsInstanceBuildWorker.USERDATA_FAILURE_STRING}\nPython failed to install"
+        )
+        ssm_get_command_invocation_return_value = {
+            "ResponseCode": 0,
+            "StandardOutputContent": failure_content,
+            "StandardErrorContent": "",
+        }
+
+        with (
+            patch.object(worker, "_stage_s3_bucket", return_value=s3_files),
+            patch.object(worker, "_launch_instance"),
+            patch.object(
+                worker.ssm_client, "send_command", return_value=ssm_send_command_return_value
+            ) as mock_send_command,
+            patch.object(
+                worker.ssm_client,
+                "get_command_invocation",
+                return_value=ssm_get_command_invocation_return_value,
+            ) as mock_get_command_invocation,
+            patch.object(worker.ssm_client, "get_waiter"),
+            patch.object(
+                worker,
+                "get_worker_id",
+                return_value=CommandResult(
+                    exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+            ),
+            pytest.raises(AssertionError) as excinfo,
+        ):
+            # WHEN
+            worker.start()
+
+        # THEN
+        mock_send_command.assert_called_once()
+        mock_get_command_invocation.assert_called_once()
+        assert failure_content in str(excinfo.value)
+
+    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    def test_start_userdata_timed_out(self, worker: WindowsInstanceBuildWorker) -> None:
+        # GIVEN
+        s3_files = [
+            ("s3://bucket/key", "C:\\tmp\\key"),
+        ]
+
+        with (
+            patch.object(worker, "_stage_s3_bucket", return_value=s3_files),
+            patch.object(worker, "_launch_instance"),
+            patch.object(mod, "wait_for", side_effect=TimeoutError()),
+            patch.object(
+                worker,
+                "get_worker_id",
+                return_value=CommandResult(
+                    exit_code=0, stdout="worker-7c3377ec9eba444bb51cc7da18463081"
+                ),
+            ),
+            pytest.raises(TimeoutError),
+        ):
+            # WHEN / THEN
+            worker.start()
+
+    def test_stage_s3_bucket(
+        self,
+        worker: WindowsInstanceBuildWorker,
+        windows_worker_config: DeadlineWorkerConfiguration,
+        bootstrap_bucket_name: str,
+    ) -> None:
+        # GIVEN
+        with (
+            patch.object(mod.glob, "glob", lambda path: [path]),
+            patch.object(mod, "open", mock_open(read_data="mock data".encode())),
+        ):
+            # WHEN
+            s3_files = worker._stage_s3_bucket()
+
+        # THEN
+        assert s3_files is not None and windows_worker_config.file_mappings is not None
+        assert len(s3_files) == len(windows_worker_config.file_mappings)
+        for src, dst in windows_worker_config.file_mappings:
+            assert (
+                f"s3://{bootstrap_bucket_name}/worker/{os.path.basename(src)}",
+                dst,
+            ) in s3_files
+
+        s3_client = boto3.client("s3")
+        for s3_uri, _ in s3_files:
+            s3_obj = S3Object.from_uri(s3_uri)
+            s3_client.head_object(
+                Bucket=s3_obj.bucket,
+                Key=s3_obj.key,
+                ExpectedBucketOwner="123456789012",
+            )
+
+    def test_launch_instance(
+        self,
+        worker: WindowsInstanceBuildWorker,
+        vpc_id: str,
+        subnet_id: str,
+        security_group_id: str,
+        instance_profile: Any,
+    ) -> None:
+        # WHEN
+        worker._launch_instance()
+
+        # THEN
+        assert worker.instance_id is not None
+        instance = describe_instance(worker.instance_id)
+        assert instance["ImageId"] == worker.ami_id
+        assert instance["State"]["Name"] == "running"
+        assert instance["SubnetId"] == subnet_id
+        assert instance["VpcId"] == vpc_id
+        assert instance["IamInstanceProfile"]["Arn"] == instance_profile["Arn"]
+        assert len(instance["SecurityGroups"]) == 1
+        assert instance["SecurityGroups"][0]["GroupId"] == security_group_id
+
+    def test_stop(self, worker: WindowsInstanceBuildWorker) -> None:
+        # GIVEN
+        start_worker_with_mocks(worker)
+        instance_id = worker.instance_id
+        assert instance_id is not None
+
+        instance = describe_instance(instance_id)
+        assert instance["State"]["Name"] == "running"
+
+        worker.stop()
+
+        # THEN
+        instance = describe_instance(instance_id)
+        assert instance["State"]["Name"] == "terminated"
+        assert worker.instance_id is None
+
+    class TestSendCommand:
+        def test_sends_command_uses_powershell(self, worker: WindowsInstanceBuildWorker) -> None:
+            # GIVEN
+            cmd = 'Write-Output "Hello world"'
+            start_worker_with_mocks(worker)
+
+            # WHEN
+            with patch.object(
+                worker.ssm_client, "send_command", wraps=worker.ssm_client.send_command
+            ) as send_command_spy:
+                worker.send_command(cmd)
+
+            # THEN
+            send_command_spy.assert_called_once_with(
+                InstanceIds=[worker.instance_id],
+                DocumentName="AWS-RunPowerShellScript",
+                Parameters={"commands": [cmd]},
+            )
+
+        def test_retries_when_instance_not_ready(self, worker: WindowsInstanceBuildWorker) -> None:
+            # GIVEN
+            cmd = 'Write-Output "Hello world"'
+            start_worker_with_mocks(worker)
+            real_send_command = worker.ssm_client.send_command
+
+            call_count = 0
+
+            def side_effect(*args, **kwargs):
+                nonlocal call_count
+                if call_count < 1:
+                    call_count += 1
+                    raise ClientError({"Error": {"Code": "InvalidInstanceId"}}, "SendCommand")
+                else:
+                    return real_send_command(*args, **kwargs)
+
+            # WHEN
+            with patch.object(
+                worker.ssm_client, "send_command", side_effect=side_effect
+            ) as mock_send_command:
+                worker.send_command(cmd)
+
+            # THEN
+            mock_send_command.assert_has_calls(
+                [
+                    call(
+                        InstanceIds=[worker.instance_id],
+                        DocumentName="AWS-RunPowerShellScript",
+                        Parameters={"commands": [cmd]},
+                    )
+                ]
+                * 2
+            )
+
+        def test_raises_any_other_error(self, worker: WindowsInstanceBuildWorker) -> None:
+            # GIVEN
+            cmd = 'Write-Output "Hello world"'
+            start_worker_with_mocks(worker)
+            err = ClientError({"Error": {"Code": "SomethingWentWrong"}}, "SendCommand")
+
+            # WHEN
+            with pytest.raises(ClientError) as raised_err:
+                with patch.object(
+                    worker.ssm_client, "send_command", side_effect=err
+                ) as mock_send_command:
+                    worker.send_command(cmd)
+
+            # THEN
+            assert raised_err.value is err
+            mock_send_command.assert_called_once_with(
+                InstanceIds=[worker.instance_id],
+                DocumentName="AWS-RunPowerShellScript",
+                Parameters={"commands": [cmd]},
+            )
+
+    @pytest.mark.parametrize(
+        "worker_id",
+        [
+            "worker-7c3377ec9eba444bb51cc7da18463081",
+            "worker-7c3377ec9eba444bb51cc7da18463081\n",
+            "worker-7c3377ec9eba444bb51cc7da18463081\r\n",
+        ],
+    )
+    def test_get_worker_id(self, worker_id: str, worker: WindowsInstanceBuildWorker) -> None:
+        # GIVEN
+        with patch.object(
+            worker,
+            "send_command",
+            return_value=CommandResult(exit_code=0, stdout=worker_id),
+        ):
+            # WHEN
+            result = worker.get_worker_id()
+
+        # THEN
+        assert result == worker_id.rstrip("\n\r")
+
+    def test_ami_id(self, worker: WindowsInstanceBuildWorker) -> None:
+        # The worker fixture uses override_ami_id, so ami_id should return it
+        # WHEN
+        ami_id = worker.ami_id
+
+        # THEN
+        assert ami_id == self.FAKE_AMI_ID
+
+    def test_ssm_document_name(self, worker: WindowsInstanceBuildWorker) -> None:
+        assert worker.ssm_document_name() == "AWS-RunPowerShellScript"
+
+    def test_ebs_devices(self, worker: WindowsInstanceBuildWorker) -> None:
+        devices = worker.ebs_devices()
+        assert devices is not None
+        assert "/dev/sda1" in devices
+        assert devices["/dev/sda1"] == 60
+
+    def test_configure_worker_command_contains_install(
+        self,
+        worker: WindowsInstanceBuildWorker,
+        windows_worker_config: DeadlineWorkerConfiguration,
+    ) -> None:
+        # WHEN
+        cmd = worker.configure_worker_command(config=windows_worker_config)
+
+        # THEN
+        assert "install-deadline-worker" in cmd
+        assert f"--farm-id {windows_worker_config.farm_id}" in cmd
+        assert f"--fleet-id {windows_worker_config.fleet.id}" in cmd
+        assert f"--region {windows_worker_config.region}" in cmd
+
+    def test_configure_worker_command_with_allow_shutdown(
+        self,
+        worker: WindowsInstanceBuildWorker,
+        windows_worker_config: DeadlineWorkerConfiguration,
+    ) -> None:
+        # GIVEN
+        config = DeadlineWorkerConfiguration(
+            **{
+                **windows_worker_config.__dict__,
+                "allow_shutdown": True,
+            }
+        )
+
+        # WHEN
+        cmd = worker.configure_worker_command(config=config)
+
+        # THEN
+        assert "--allow-shutdown" in cmd
+
+    def test_userdata_contains_python_install(self, worker: WindowsInstanceBuildWorker) -> None:
+        # WHEN
+        userdata = worker.userdata(None)
+
+        # THEN
+        assert "python" in userdata.lower()
+        assert "AWSCLIV2.msi" in userdata
+        assert worker.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME in userdata
+
+    def test_userdata_with_s3_files(self, worker: WindowsInstanceBuildWorker) -> None:
+        # GIVEN
+        s3_files = [
+            ("s3://bucket/key", "C:\\tmp\\key"),
+        ]
+
+        # WHEN
+        userdata = worker.userdata(s3_files)
+
+        # THEN
+        assert "aws s3 cp s3://bucket/key C:\\tmp\\key" in userdata
+
+    def test_userdata_success_script(self, worker: WindowsInstanceBuildWorker) -> None:
+        # WHEN
+        script = worker.userdata_success_script()
+
+        # THEN
+        assert worker.USERDATA_SUCCESS_STRING in script
+        assert worker.USERDATA_FAILURE_STRING in script
+        assert worker.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME in script
+        assert worker.SIGNAL_USER_DATA_FAILED_FILE_NAME in script
