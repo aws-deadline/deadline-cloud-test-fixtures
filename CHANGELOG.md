@@ -1,3 +1,9 @@
+## 0.18.11 (2026-04-13)
+
+### Bug Fixes
+* Update Windows Python version for worker agent to Python 3.13.13 (#267) ([`50244ee`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/50244ee5ecbbd58458ddd2ebbdd0aebe7a62ec62))
+
+
 ## 0.18.10 (2026-01-22)
 
 
