@@ -68,7 +68,6 @@ jobs:
   PublishToPyPI:
     needs: [TagRelease, Publish]
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       id-token: write
     steps:
