@@ -1,3 +1,7 @@
+## 0.18.12 (2026-05-26)
+
+### Bug Fixes
+* EC2 worker bootstrap pip install commands now include `--retries 10 --timeout 60` to handle transient CodeArtifact failures (e.g., 504 errors). This applies to both the pip upgrade step and the main install step in `PipInstall.install_command_for_linux` and `PipInstall.install_command_for_windows`. (#277)
 ## 0.18.11 (2026-04-13)
 
 ### Bug Fixes
