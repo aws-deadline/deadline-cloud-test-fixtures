@@ -102,6 +102,10 @@ ignore_missing_imports = true
 module = "moto"
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = "deadline_test_fixtures._version"
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 

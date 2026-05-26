@@ -191,6 +191,12 @@ class PipInstall:  # pragma: no cover
             args.append("--no-deps")
         if self.force_reinstall:
             args.append("--force-reinstall")
+        # CodeArtifact occasionally returns transient HTTP 504 on individual wheel
+        # downloads, and individual fetches sometimes exceed pip's default 15 s
+        # socket timeout when the endpoint is under load. Use a larger budget so a
+        # single 504 or slow stream does not fail canary bootstrap. pip default is
+        # 5 retries, 15 s socket timeout.
+        args.extend(["--retries", "10", "--timeout", "60"])
         return args
 
     @property
@@ -206,7 +212,7 @@ class PipInstall:  # pragma: no cover
             )
 
         if self.upgrade_pip:
-            cmds.append("pip install --upgrade pip")
+            cmds.append("pip install --upgrade pip --retries 10 --timeout 60")
 
         cmds.append(
             " ".join(
@@ -234,7 +240,7 @@ class PipInstall:  # pragma: no cover
             )
 
         if self.upgrade_pip:
-            cmds.append("python -m pip install --upgrade pip")
+            cmds.append("python -m pip install --upgrade pip --retries 10 --timeout 60")
 
         cmds.append(
             " ".join(
