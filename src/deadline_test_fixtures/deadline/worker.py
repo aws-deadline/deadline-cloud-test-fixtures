@@ -694,7 +694,7 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
 
         cmd_result = self.send_command(
             f"{self.configure_worker_command(config=self.configuration)}",
-            {"Delay": 5, "MaxAttempts": 48},
+            {"Delay": 5, "MaxAttempts": 96},
         )
         assert cmd_result.exit_code == 0, f"Failed to configure Worker agent: {cmd_result}"
         LOG.info("Successfully configured Worker agent")
