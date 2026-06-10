@@ -692,10 +692,13 @@ class WindowsInstanceWorkerBase(EC2InstanceWorker):
         assert self.instance_id
         LOG.info(f"Sending SSM command to configure Worker agent on instance {self.instance_id}")
 
-        cmd_result = self.send_command(
-            f"{self.configure_worker_command(config=self.configuration)}",
-            {"Delay": 5, "MaxAttempts": 48},
-        )
+        configure_cmd = self.configure_worker_command(config=self.configuration)
+        cmd_result = self.send_command(configure_cmd, {"Delay": 5, "MaxAttempts": 48})
+
+        if cmd_result.exit_code == -1:
+            LOG.warning(f"Configure command was not delivered to {self.instance_id}, retrying...")
+            cmd_result = self.send_command(configure_cmd, {"Delay": 5, "MaxAttempts": 48})
+
         assert cmd_result.exit_code == 0, f"Failed to configure Worker agent: {cmd_result}"
         LOG.info("Successfully configured Worker agent")
 
