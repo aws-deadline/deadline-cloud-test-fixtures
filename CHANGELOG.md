@@ -1,3 +1,7 @@
+## 0.18.13 (2026-06-15)
+
+### Bug Fixes
+* The configure command now retries once if it fails, improving reliability during test setup. (#282)
 ## 0.18.12 (2026-05-26)
 
 ### Bug Fixes
