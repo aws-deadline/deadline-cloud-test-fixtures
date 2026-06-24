@@ -7,6 +7,6 @@ pytest-xdist == 3.8.*
 black == 25.11.*; python_version > "3.9"
 black == 25.11.*; python_version <= "3.9"
 moto[cloudformation,s3] == 5.1.*
-mypy == 1.19.*
+mypy == 2.1.*
 ruff == 0.15.*
 twine == 6.2.*
