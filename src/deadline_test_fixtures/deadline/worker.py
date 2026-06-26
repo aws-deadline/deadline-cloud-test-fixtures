@@ -1113,11 +1113,15 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
         """Get the command to configure the Worker. This must be run as root."""
         cmds = [
             "set -x",
+            'T0=$(date +%s); echo "TIMING: bootstrap_start=$(date -Iseconds)"',
             "source /opt/deadline/worker/bin/activate",
             f"AWS_DEFAULT_REGION={self.configuration.region}",
+            'echo "TIMING: pip_install_start elapsed=$(($(date +%s) - T0))s"',
             config.worker_agent_install.install_command_for_linux,
+            'echo "TIMING: pip_install_done elapsed=$(($(date +%s) - T0))s"',
             *(config.pre_install_commands or []),
             # fmt: off
+            "echo \"TIMING: configure_worker_start elapsed=$(($(date +%s) - T0))s\"",
             (
                 "install-deadline-worker "
                 + "-y "
@@ -1135,6 +1139,7 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
                     else ""
                 )
             ),
+            "echo \"TIMING: configure_worker_done elapsed=$(($(date +%s) - T0))s\"",
             # fmt: on
             f"runuser --login {self.configuration.agent_user} --command 'echo \"source /opt/deadline/worker/bin/activate\" >> $HOME/.bashrc'",
         ]
