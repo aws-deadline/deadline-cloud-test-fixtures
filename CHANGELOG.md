@@ -1,3 +1,7 @@
+## 0.18.14 (2026-06-30)
+
+### Bug Fixes
+* Fixed an issue where old job attachment queues were not being properly cleaned up during tests. (#280)
 ## 0.18.13 (2026-06-15)
 
 ### Bug Fixes
