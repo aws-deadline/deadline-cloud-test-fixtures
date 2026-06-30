@@ -1,5 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+from datetime import datetime, timedelta, timezone
 from typing import Generator
 from unittest.mock import MagicMock, patch
 
@@ -10,6 +11,15 @@ from moto import mock_aws
 
 from deadline_test_fixtures import job_attachment_manager as jam_module
 from deadline_test_fixtures import DeadlineClient, JobAttachmentManager
+
+
+OLD = datetime.now(timezone.utc) - timedelta(days=7)
+# Ten seconds past the 1-day STALE_QUEUE_MIN_AGE cutoff. Hardcoded (not imported
+# from the module) so a regression that loosens the cutoff is caught here. The
+# 10-second margin absorbs any drift between this module-level datetime.now()
+# at import time and the production code's datetime.now() at test execution.
+JUST_STALE = datetime.now(timezone.utc) - timedelta(days=1, seconds=10)
+RECENT = datetime.now(timezone.utc) - timedelta(minutes=5)
 
 
 class TestJobAttachmentManager:
@@ -27,9 +37,11 @@ class TestJobAttachmentManager:
         self,
     ) -> Generator[JobAttachmentManager, None, None]:
         with mock_aws():
+            mock_client = MagicMock()
+            mock_client.list_queues.return_value = {"queues": []}
             yield JobAttachmentManager(
                 s3_client=boto3.client("s3"),
-                deadline_client=DeadlineClient(MagicMock()),
+                deadline_client=DeadlineClient(mock_client),
                 stage="test",
                 account_id="123456789101",
                 farm_id="farm-123450981092384",
@@ -49,7 +61,7 @@ class TestJobAttachmentManager:
             job_attachment_manager.deploy_resources()
 
             # THEN
-            mock_queue_cls.create.call_count == 2
+            assert mock_queue_cls.create.call_count == 2
 
         @pytest.mark.parametrize(
             "error",
@@ -179,4 +191,229 @@ class TestJobAttachmentManager:
 
         # THEN
         spy_empty_bucket.assert_called_once()
-        mock_queue_cls.create.return_value.delete.call_count == 2
+        assert mock_queue_cls.create.return_value.delete.call_count == 2
+
+    class TestCleanupStaleQueues:
+        def test_deletes_queues_with_matching_names(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+        ):
+            """
+            Test that stale queues with matching display names are deleted.
+            """
+            # GIVEN
+            mock_client = job_attachment_manager.deadline_client._real_client
+            mock_client.list_queues.return_value = {
+                "queues": [
+                    {
+                        "queueId": "queue-stale1",
+                        "displayName": "job_attachments_test_queue",
+                        "createdAt": OLD,
+                    },
+                    {
+                        "queueId": "queue-stale2",
+                        "displayName": "job_attachments_test_no_settings_queue",
+                        "createdAt": OLD,
+                    },
+                    {
+                        "queueId": "queue-keep",
+                        "displayName": "some_other_queue",
+                        "createdAt": OLD,
+                    },
+                ]
+            }
+
+            # WHEN
+            job_attachment_manager._cleanup_stale_queues()
+
+            # THEN
+            assert mock_client.delete_queue.call_count == 2
+            mock_client.delete_queue.assert_any_call(
+                farmId=job_attachment_manager.farm_id, queueId="queue-stale1"
+            )
+            mock_client.delete_queue.assert_any_call(
+                farmId=job_attachment_manager.farm_id, queueId="queue-stale2"
+            )
+
+        def test_deletes_queue_just_past_cutoff(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+        ):
+            """
+            A queue created just past STALE_QUEUE_MIN_AGE must be deleted —
+            exercises the cutoff lower bound (counterpart to test_skips_recent_queues).
+            """
+            # GIVEN
+            mock_client = job_attachment_manager.deadline_client._real_client
+            mock_client.list_queues.return_value = {
+                "queues": [
+                    {
+                        "queueId": "queue-just-stale",
+                        "displayName": "job_attachments_test_queue",
+                        "createdAt": JUST_STALE,
+                    },
+                ]
+            }
+
+            # WHEN
+            job_attachment_manager._cleanup_stale_queues()
+
+            # THEN
+            mock_client.delete_queue.assert_called_once_with(
+                farmId=job_attachment_manager.farm_id, queueId="queue-just-stale"
+            )
+
+        def test_skips_recent_queues(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+        ):
+            """
+            Recent queues (within STALE_QUEUE_MIN_AGE) must not be deleted — they
+            may belong to a concurrently-running test process sharing the farm.
+            """
+            # GIVEN
+            mock_client = job_attachment_manager.deadline_client._real_client
+            mock_client.list_queues.return_value = {
+                "queues": [
+                    {
+                        "queueId": "queue-old",
+                        "displayName": "job_attachments_test_queue",
+                        "createdAt": OLD,
+                    },
+                    {
+                        "queueId": "queue-recent",
+                        "displayName": "job_attachments_test_queue",
+                        "createdAt": RECENT,
+                    },
+                ]
+            }
+
+            # WHEN
+            job_attachment_manager._cleanup_stale_queues()
+
+            # THEN — only the old queue is deleted; recent + missing-timestamp are skipped
+            mock_client.delete_queue.assert_called_once_with(
+                farmId=job_attachment_manager.farm_id, queueId="queue-old"
+            )
+
+        def test_handles_list_queues_error_gracefully(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+        ):
+            """
+            Test that errors during stale queue cleanup don't block test execution.
+            """
+            # GIVEN
+            mock_client = job_attachment_manager.deadline_client._real_client
+            mock_client.list_queues.side_effect = ClientError(
+                {"Error": {"Code": "AccessDeniedException", "Message": "Access denied"}},
+                "ListQueues",
+            )
+
+            # WHEN / THEN - should not raise
+            job_attachment_manager._cleanup_stale_queues()
+
+        def test_paginates_through_all_queues(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+        ):
+            """
+            Test that stale queue cleanup follows nextToken across multiple pages.
+            """
+            # GIVEN
+            mock_client = job_attachment_manager.deadline_client._real_client
+            mock_client.list_queues.side_effect = [
+                {
+                    "queues": [
+                        {
+                            "queueId": "queue-page1",
+                            "displayName": "job_attachments_test_queue",
+                            "createdAt": OLD,
+                        },
+                    ],
+                    "nextToken": "token-1",
+                },
+                {
+                    "queues": [
+                        {
+                            "queueId": "queue-page2",
+                            "displayName": "job_attachments_test_no_settings_queue",
+                            "createdAt": OLD,
+                        },
+                    ],
+                },
+            ]
+
+            # WHEN
+            job_attachment_manager._cleanup_stale_queues()
+
+            # THEN
+            assert mock_client.list_queues.call_count == 2
+            mock_client.list_queues.assert_any_call(
+                farmId=job_attachment_manager.farm_id, nextToken="token-1"
+            )
+            assert mock_client.delete_queue.call_count == 2
+            mock_client.delete_queue.assert_any_call(
+                farmId=job_attachment_manager.farm_id, queueId="queue-page1"
+            )
+            mock_client.delete_queue.assert_any_call(
+                farmId=job_attachment_manager.farm_id, queueId="queue-page2"
+            )
+
+        def test_handles_delete_queue_error_gracefully(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+        ):
+            """
+            Test that a failure to delete one stale queue doesn't prevent others from being deleted.
+            """
+            # GIVEN
+            mock_client = job_attachment_manager.deadline_client._real_client
+            mock_client.list_queues.return_value = {
+                "queues": [
+                    {
+                        "queueId": "queue-stale1",
+                        "displayName": "job_attachments_test_queue",
+                        "createdAt": OLD,
+                    },
+                    {
+                        "queueId": "queue-stale2",
+                        "displayName": "job_attachments_test_no_settings_queue",
+                        "createdAt": OLD,
+                    },
+                ]
+            }
+            mock_client.delete_queue.side_effect = [
+                ClientError(
+                    {"Error": {"Code": "ConflictException", "Message": "Queue in use"}},
+                    "DeleteQueue",
+                ),
+                None,  # Second delete succeeds
+            ]
+
+            # WHEN / THEN - should not raise
+            job_attachment_manager._cleanup_stale_queues()
+            assert mock_client.delete_queue.call_count == 2
+
+        def test_no_matching_queues_does_nothing(
+            self,
+            job_attachment_manager: JobAttachmentManager,
+        ):
+            """If no queues match our display names, nothing is deleted."""
+            # GIVEN
+            mock_client = job_attachment_manager.deadline_client._real_client
+            mock_client.list_queues.return_value = {
+                "queues": [
+                    {
+                        "queueId": "queue-other",
+                        "displayName": "some_other_queue",
+                        "createdAt": OLD,
+                    },
+                ]
+            }
+
+            # WHEN
+            job_attachment_manager._cleanup_stale_queues()
+
+            # THEN
+            mock_client.delete_queue.assert_not_called()
