@@ -12,7 +12,6 @@ from moto import mock_aws
 from deadline_test_fixtures import job_attachment_manager as jam_module
 from deadline_test_fixtures import DeadlineClient, JobAttachmentManager
 
-
 OLD = datetime.now(timezone.utc) - timedelta(days=7)
 # Ten seconds past the 1-day STALE_QUEUE_MIN_AGE cutoff. Hardcoded (not imported
 # from the module) so a regression that loosens the cutoff is caught here. The

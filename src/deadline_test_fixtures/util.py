@@ -8,7 +8,6 @@ from time import sleep
 from typing import Any, Callable
 import functools
 
-
 LOG = logging.getLogger(__name__)
 
 
