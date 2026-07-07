@@ -1,3 +1,7 @@
+## 0.18.15 (2026-07-07)
+
+### Features
+* Updated the default Python version for Windows worker agent to 3.13.14. (#296)
 ## 0.18.14 (2026-06-30)
 
 ### Bug Fixes
