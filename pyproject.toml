@@ -39,7 +39,12 @@ dependencies = [
   # transitively then resolving the dependency closure of this package in conjunction with
   # other test dependencies in other packages can result in it taking 20+ minutes to resolve
   # dependencies in Python3.9. So, we explicitly include the botocore dependency here.
-  "botocore >= 1.34.75"
+  "botocore >= 1.34.75",
+  "xa11y >= 0.9.1",
+  "PyYAML >= 6.0",
+  "numpy >= 1.23",
+  "Pillow >= 10.0",
+  "openjd-cli >= 0.7",
 ]
 
 [project.urls]
