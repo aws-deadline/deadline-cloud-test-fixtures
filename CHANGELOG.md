@@ -1,3 +1,7 @@
+## 0.18.16 (2026-07-17)
+
+### Features
+* Added test fixtures for GUI testing using xa11y, enabling automated accessibility-based GUI testing. (#301)
 ## 0.18.15 (2026-07-07)
 
 ### Features
