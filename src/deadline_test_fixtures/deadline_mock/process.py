@@ -74,7 +74,7 @@ class MockDeadlineServerProcess:
         self,
         scenario: Optional[MockDeadlineScenario] = None,
         *,
-        startup_timeout: float = 30.0,
+        startup_timeout: float = 60.0,
     ) -> None:
         self.scenario = scenario or MockDeadlineScenario()
         self.startup_timeout = startup_timeout
