@@ -1,3 +1,7 @@
+## 0.18.17 (2026-07-17)
+
+### Bug Fixes
+* Fixed an issue with threaded mock server startup that could cause test fixture initialization failures. (#303)
 ## 0.18.16 (2026-07-17)
 
 ### Features
