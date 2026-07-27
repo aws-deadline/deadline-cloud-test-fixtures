@@ -1,3 +1,7 @@
+## 0.18.18 (2026-07-27)
+
+### Features
+* Added `session_runtime` field to `DeadlineWorkerConfiguration`, allowing you to specify which OpenJD session runtime backend ("python", "rust", or "service-selected") a worker uses during E2E tests. (`85ee7b0`)
 ## 0.18.17 (2026-07-17)
 
 ### Bug Fixes
