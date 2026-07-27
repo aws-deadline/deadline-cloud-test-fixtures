@@ -848,9 +848,7 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
         """Get the command to configure the Worker. This must be run as Administrator."""
 
         if config.session_runtime:
-            raise NotImplementedError(
-                "session_runtime passthrough is not implemented for Windows workers"
-            )
+            _validate_session_runtime(config.session_runtime)
 
         cmds = [
             "Set-PSDebug -trace 1",
@@ -880,6 +878,26 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
             ),
             # fmt: on
         ]
+
+        # Activate session_runtime in worker.toml if specified.
+        # The installer writes a commented-out "# session_runtime = ..." line;
+        # -replace uncomments and sets the desired value.
+        if config.session_runtime:
+            toml_path = r"C:\ProgramData\Amazon\Deadline\Config\worker.toml"
+            # -replace exits cleanly even when its pattern matches nothing, so a format
+            # drift in worker.toml.example would otherwise leave the worker silently on
+            # the default runtime; the Select-String makes that a loud setup failure.
+            cmds.append(
+                f"(Get-Content '{toml_path}') -replace"
+                f" '^# session_runtime = .*',"
+                f" 'session_runtime = \"{config.session_runtime}\"'"
+                f" | Set-Content '{toml_path}'"
+            )
+            cmds.append(
+                f"if (-not (Select-String -Path '{toml_path}'"
+                f" -Pattern '^session_runtime = \"{config.session_runtime}\"$' -Quiet))"
+                f" {{ throw 'session_runtime was not applied to worker.toml' }}"
+            )
 
         if config.service_model_path:
             cmds.append(
