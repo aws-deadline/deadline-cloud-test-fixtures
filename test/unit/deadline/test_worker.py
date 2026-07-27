@@ -845,28 +845,63 @@ class TestSessionRuntimePassthrough:
         # (session_root_dir may appear but that's a different field)
         assert "session_runtime" not in cmd
 
-    def test_windows_raises_not_implemented_when_session_runtime_set(
+    @pytest.mark.parametrize("runtime", ["python", "rust", "service-selected"])
+    def test_windows_command_contains_replace_when_session_runtime_set(
         self,
         windows_worker: WindowsInstanceBuildWorker,
         base_config: DeadlineWorkerConfiguration,
+        runtime: str,
     ) -> None:
-        """Windows should raise NotImplementedError when session_runtime is set."""
+        """When session_runtime is set, command should contain PowerShell -replace for worker.toml."""
         from dataclasses import replace
 
-        config_with_runtime = replace(base_config, session_runtime="rust")
-        with pytest.raises(NotImplementedError, match="session_runtime"):
-            windows_worker.configure_worker_command(config=config_with_runtime)
+        config_with_runtime = replace(base_config, session_runtime=runtime)
+        cmd = windows_worker.configure_worker_command(config=config_with_runtime)
 
-    def test_windows_fine_when_session_runtime_none(
+        toml_path = r"C:\ProgramData\Amazon\Deadline\Config\worker.toml"
+        assert toml_path in cmd, f"Missing worker.toml path in: {cmd}"
+        assert "-replace" in cmd, f"Missing -replace in: {cmd}"
+        assert f'session_runtime = "{runtime}"' in cmd, f"Missing session_runtime value in: {cmd}"
+
+    def test_windows_command_no_replace_when_session_runtime_none(
         self,
         windows_worker: WindowsInstanceBuildWorker,
         base_config: DeadlineWorkerConfiguration,
     ) -> None:
-        """Windows should work normally when session_runtime is None."""
+        """When session_runtime is None (default), no PowerShell replace for session_runtime."""
         cmd = windows_worker.configure_worker_command(config=base_config)
 
-        # Should produce a valid command string without errors
-        assert "install-deadline-worker" in cmd
+        assert "session_runtime" not in cmd
+
+    @pytest.mark.parametrize("runtime", ["python", "rust", "service-selected"])
+    def test_windows_command_contains_select_string_verification(
+        self,
+        windows_worker: WindowsInstanceBuildWorker,
+        base_config: DeadlineWorkerConfiguration,
+        runtime: str,
+    ) -> None:
+        """Command must verify the line was applied via Select-String, so a no-op is loud."""
+        from dataclasses import replace
+
+        config_with_runtime = replace(base_config, session_runtime=runtime)
+        cmd = windows_worker.configure_worker_command(config=config_with_runtime)
+
+        toml_path = r"C:\ProgramData\Amazon\Deadline\Config\worker.toml"
+        assert "Select-String" in cmd, f"Missing Select-String verification in: {cmd}"
+        assert toml_path in cmd
+        assert f'session_runtime = "{runtime}"' in cmd
+
+    def test_windows_raises_on_invalid_session_runtime(
+        self,
+        windows_worker: WindowsInstanceBuildWorker,
+        base_config: DeadlineWorkerConfiguration,
+    ) -> None:
+        """Invalid session_runtime values should raise ValueError (shared validator)."""
+        from dataclasses import replace
+
+        config_invalid = replace(base_config, session_runtime="'; powershell -c evil; echo '")
+        with pytest.raises(ValueError, match="Invalid session_runtime"):
+            windows_worker.configure_worker_command(config=config_invalid)
 
     def test_posix_raises_on_invalid_session_runtime(
         self, posix_worker: PosixInstanceBuildWorker, base_config: DeadlineWorkerConfiguration
