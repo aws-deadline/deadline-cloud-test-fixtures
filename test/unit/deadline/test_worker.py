@@ -22,6 +22,7 @@ from deadline_test_fixtures import (
     PipInstall,
     PosixInstanceBuildWorker,
     S3Object,
+    WindowsInstanceBuildWorker,
 )
 from deadline_test_fixtures.deadline import worker as mod
 
@@ -688,3 +689,226 @@ class TestDockerContainerWorker:
 
         # THEN
         assert result == worker_id
+
+
+class TestSessionRuntimePassthrough:
+    """Tests for session_runtime field passthrough in configure_worker_command."""
+
+    @pytest.fixture
+    def vpc_id(self) -> str:
+        return boto3.client("ec2").create_vpc(CidrBlock="10.0.0.0/28")["Vpc"]["VpcId"]
+
+    @pytest.fixture
+    def subnet_id(self, vpc_id: str) -> str:
+        return boto3.client("ec2").create_subnet(
+            VpcId=vpc_id,
+            CidrBlock="10.0.0.0/28",
+        )[
+            "Subnet"
+        ]["SubnetId"]
+
+    @pytest.fixture
+    def security_group_id(self, vpc_id: str) -> str:
+        return boto3.client("ec2").create_security_group(
+            VpcId=vpc_id,
+            Description="Testing",
+            GroupName="TestSG-Runtime",
+        )["GroupId"]
+
+    @pytest.fixture
+    def instance_profile_name(self) -> str:
+        return boto3.client("iam").create_instance_profile(
+            InstanceProfileName="instance-profile-runtime"
+        )["InstanceProfile"]["InstanceProfileName"]
+
+    @pytest.fixture
+    def bootstrap_bucket_name(self, region: str) -> str:
+        name = "bootstrap-bucket-runtime"
+        kwargs: dict[str, Any] = {"Bucket": name}
+        if region != "us-east-1":
+            kwargs["CreateBucketConfiguration"] = {"LocationConstraint": region}
+        boto3.client("s3").create_bucket(**kwargs)
+        return name
+
+    @pytest.fixture
+    def base_config(self, region: str) -> DeadlineWorkerConfiguration:
+        return DeadlineWorkerConfiguration(
+            farm_id="farm-123",
+            fleet=Fleet(id="fleet-123", farm=Farm(id="farm-123")),
+            region=region,
+            allow_shutdown=False,
+            worker_agent_install=PipInstall(
+                requirement_specifiers=["deadline-cloud-worker-agent"],
+                codeartifact=CodeArtifactRepositoryInfo(
+                    region=region,
+                    domain="test-domain",
+                    domain_owner="123456789123",
+                    repository="test-repository",
+                ),
+            ),
+        )
+
+    @pytest.fixture
+    def posix_worker(
+        self,
+        base_config: DeadlineWorkerConfiguration,
+        subnet_id: str,
+        security_group_id: str,
+        instance_profile_name: str,
+        bootstrap_bucket_name: str,
+    ) -> PosixInstanceBuildWorker:
+        return PosixInstanceBuildWorker(
+            subnet_id=subnet_id,
+            security_group_id=security_group_id,
+            instance_profile_name=instance_profile_name,
+            bootstrap_bucket_name=bootstrap_bucket_name,
+            s3_client=boto3.client("s3"),
+            ec2_client=boto3.client("ec2"),
+            ssm_client=boto3.client("ssm"),
+            deadline_client=boto3.client("deadline"),
+            configuration=base_config,
+            instance_type="t3.micro",
+            instance_shutdown_behavior="terminate",
+        )
+
+    @pytest.fixture
+    def windows_worker(
+        self,
+        base_config: DeadlineWorkerConfiguration,
+        subnet_id: str,
+        security_group_id: str,
+        instance_profile_name: str,
+        bootstrap_bucket_name: str,
+    ) -> WindowsInstanceBuildWorker:
+        return WindowsInstanceBuildWorker(
+            subnet_id=subnet_id,
+            security_group_id=security_group_id,
+            instance_profile_name=instance_profile_name,
+            bootstrap_bucket_name=bootstrap_bucket_name,
+            s3_client=boto3.client("s3"),
+            ec2_client=boto3.client("ec2"),
+            ssm_client=boto3.client("ssm"),
+            deadline_client=boto3.client("deadline"),
+            configuration=base_config,
+            instance_type="t3.micro",
+            instance_shutdown_behavior="terminate",
+        )
+
+    def test_posix_command_contains_sed_when_session_runtime_set(
+        self, posix_worker: PosixInstanceBuildWorker, base_config: DeadlineWorkerConfiguration
+    ) -> None:
+        """When session_runtime is set, the command should contain a sed to update worker.toml."""
+        from dataclasses import replace
+
+        config_with_runtime = replace(base_config, session_runtime="rust")
+        cmd = posix_worker.configure_worker_command(config_with_runtime)
+
+        assert "sed" in cmd
+        assert "session_runtime" in cmd
+        assert "rust" in cmd
+
+    @pytest.mark.parametrize("runtime", ["python", "rust", "service-selected"])
+    def test_posix_command_contains_grep_verification_after_sed(
+        self,
+        posix_worker: PosixInstanceBuildWorker,
+        base_config: DeadlineWorkerConfiguration,
+        runtime: str,
+    ) -> None:
+        """The command must grep for the exact expected line after sed, so a no-op sed is loud."""
+        from dataclasses import replace
+
+        config_with_runtime = replace(base_config, session_runtime=runtime)
+        cmd = posix_worker.configure_worker_command(config_with_runtime)
+
+        expected_sed = (
+            f"sed -i 's/^# session_runtime = .*/session_runtime = \"{runtime}\"/' "
+            "/etc/amazon/deadline/worker.toml"
+        )
+        expected_grep = (
+            f"grep -q '^session_runtime = \"{runtime}\"' /etc/amazon/deadline/worker.toml"
+        )
+        assert expected_sed in cmd, f"Missing sed command in: {cmd}"
+        assert expected_grep in cmd, f"Missing grep verification in: {cmd}"
+
+        # grep must come after sed (both joined by ' && ')
+        sed_pos = cmd.index(expected_sed)
+        grep_pos = cmd.index(expected_grep)
+        assert grep_pos > sed_pos, "grep must follow sed in the command chain"
+
+    def test_posix_command_no_sed_when_session_runtime_none(
+        self, posix_worker: PosixInstanceBuildWorker, base_config: DeadlineWorkerConfiguration
+    ) -> None:
+        """When session_runtime is None (default), no sed command for session_runtime."""
+        cmd = posix_worker.configure_worker_command(base_config)
+
+        # The word "session_runtime" should NOT appear in the command
+        # (session_root_dir may appear but that's a different field)
+        assert "session_runtime" not in cmd
+
+    @pytest.mark.parametrize("runtime", ["python", "rust", "service-selected"])
+    def test_windows_command_contains_replace_when_session_runtime_set(
+        self,
+        windows_worker: WindowsInstanceBuildWorker,
+        base_config: DeadlineWorkerConfiguration,
+        runtime: str,
+    ) -> None:
+        """When session_runtime is set, command should contain PowerShell -replace for worker.toml."""
+        from dataclasses import replace
+
+        config_with_runtime = replace(base_config, session_runtime=runtime)
+        cmd = windows_worker.configure_worker_command(config=config_with_runtime)
+
+        toml_path = r"C:\ProgramData\Amazon\Deadline\Config\worker.toml"
+        assert toml_path in cmd, f"Missing worker.toml path in: {cmd}"
+        assert "-replace" in cmd, f"Missing -replace in: {cmd}"
+        assert f'session_runtime = "{runtime}"' in cmd, f"Missing session_runtime value in: {cmd}"
+
+    def test_windows_command_no_replace_when_session_runtime_none(
+        self,
+        windows_worker: WindowsInstanceBuildWorker,
+        base_config: DeadlineWorkerConfiguration,
+    ) -> None:
+        """When session_runtime is None (default), no PowerShell replace for session_runtime."""
+        cmd = windows_worker.configure_worker_command(config=base_config)
+
+        assert "session_runtime" not in cmd
+
+    @pytest.mark.parametrize("runtime", ["python", "rust", "service-selected"])
+    def test_windows_command_contains_select_string_verification(
+        self,
+        windows_worker: WindowsInstanceBuildWorker,
+        base_config: DeadlineWorkerConfiguration,
+        runtime: str,
+    ) -> None:
+        """Command must verify the line was applied via Select-String, so a no-op is loud."""
+        from dataclasses import replace
+
+        config_with_runtime = replace(base_config, session_runtime=runtime)
+        cmd = windows_worker.configure_worker_command(config=config_with_runtime)
+
+        toml_path = r"C:\ProgramData\Amazon\Deadline\Config\worker.toml"
+        assert "Select-String" in cmd, f"Missing Select-String verification in: {cmd}"
+        assert toml_path in cmd
+        assert f'session_runtime = "{runtime}"' in cmd
+
+    def test_windows_raises_on_invalid_session_runtime(
+        self,
+        windows_worker: WindowsInstanceBuildWorker,
+        base_config: DeadlineWorkerConfiguration,
+    ) -> None:
+        """Invalid session_runtime values should raise ValueError (shared validator)."""
+        from dataclasses import replace
+
+        config_invalid = replace(base_config, session_runtime="'; powershell -c evil; echo '")
+        with pytest.raises(ValueError, match="Invalid session_runtime"):
+            windows_worker.configure_worker_command(config=config_invalid)
+
+    def test_posix_raises_on_invalid_session_runtime(
+        self, posix_worker: PosixInstanceBuildWorker, base_config: DeadlineWorkerConfiguration
+    ) -> None:
+        """Invalid session_runtime values should raise ValueError (shell-injection guard)."""
+        from dataclasses import replace
+
+        config_invalid = replace(base_config, session_runtime="'; rm -rf /; echo '")
+        with pytest.raises(ValueError, match="Invalid session_runtime"):
+            posix_worker.configure_worker_command(config_invalid)

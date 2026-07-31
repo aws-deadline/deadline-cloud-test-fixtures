@@ -38,6 +38,16 @@ DEFAULT_WAITER_CONFIG = {
     "MaxAttempts": 30,
 }
 
+_VALID_SESSION_RUNTIMES = ("python", "rust", "service-selected")
+
+
+def _validate_session_runtime(value: str) -> None:
+    """Validate session_runtime before interpolating into shell commands."""
+    if value not in _VALID_SESSION_RUNTIMES:
+        raise ValueError(
+            f"Invalid session_runtime: {value!r}; " f"expected one of {_VALID_SESSION_RUNTIMES!r}"
+        )
+
 
 @dataclass
 class Ec2Tag:
@@ -165,6 +175,10 @@ class DeadlineWorkerConfiguration:
 
     session_root_dir: str | None = None
     """Path to parent directory of worker session directories"""
+
+    session_runtime: str | None = None
+    """Worker agent session_runtime setting (worker.toml [worker] section).
+    Valid values: "python", "rust", "service-selected"."""
 
     worker_env_var: Dict[str, str] | None = None
     """Additional feature flag to configure for workers"""
@@ -833,6 +847,9 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
     def configure_worker_command(self, *, config: DeadlineWorkerConfiguration) -> str:
         """Get the command to configure the Worker. This must be run as Administrator."""
 
+        if config.session_runtime:
+            _validate_session_runtime(config.session_runtime)
+
         cmds = [
             "Set-PSDebug -trace 1",
             self.configure_worker_common(config=config),
@@ -861,6 +878,26 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
             ),
             # fmt: on
         ]
+
+        # Activate session_runtime in worker.toml if specified.
+        # The installer writes a commented-out "# session_runtime = ..." line;
+        # -replace uncomments and sets the desired value.
+        if config.session_runtime:
+            toml_path = r"C:\ProgramData\Amazon\Deadline\Config\worker.toml"
+            # -replace exits cleanly even when its pattern matches nothing, so a format
+            # drift in worker.toml.example would otherwise leave the worker silently on
+            # the default runtime; the Select-String makes that a loud setup failure.
+            cmds.append(
+                f"(Get-Content '{toml_path}') -replace"
+                f" '^# session_runtime = .*',"
+                f" 'session_runtime = \"{config.session_runtime}\"'"
+                f" | Set-Content '{toml_path}'"
+            )
+            cmds.append(
+                f"if (-not (Select-String -Path '{toml_path}'"
+                f" -Pattern '^session_runtime = \"{config.session_runtime}\"$' -Quiet))"
+                f" {{ throw 'session_runtime was not applied to worker.toml' }}"
+            )
 
         if config.service_model_path:
             cmds.append(
@@ -1143,6 +1180,21 @@ class PosixInstanceBuildWorker(PosixInstanceWorkerBase):
             # fmt: on
             f"runuser --login {self.configuration.agent_user} --command 'echo \"source /opt/deadline/worker/bin/activate\" >> $HOME/.bashrc'",
         ]
+
+        # Activate session_runtime in worker.toml if specified.
+        # The installer writes a commented-out "# session_runtime = ..." line;
+        # sed uncomments and sets the desired value.
+        if config.session_runtime:
+            _validate_session_runtime(config.session_runtime)
+            cmds.append(
+                f"sed -i 's/^# session_runtime = .*/session_runtime = \"{config.session_runtime}\"/' "
+                "/etc/amazon/deadline/worker.toml"
+                # sed exits 0 even when its pattern matches nothing, so a format drift in
+                # worker.toml.example would otherwise leave the worker silently on the default
+                # runtime; the grep makes that a loud setup failure.
+                f" && grep -q '^session_runtime = \"{config.session_runtime}\"' "
+                "/etc/amazon/deadline/worker.toml"
+            )
 
         for job_user in self.configuration.job_users:
             cmds.append(f"usermod -a -G {job_user.group} {self.configuration.agent_user}")
