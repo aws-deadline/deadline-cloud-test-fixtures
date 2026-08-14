@@ -66,9 +66,11 @@ def test_http_server_serves_submitter_resources_and_records_calls(mock_server):
 def test_http_server_records_unmatched_requests(mock_server):
     backend, endpoint_url = mock_server
 
-    with pytest.raises(HTTPError) as error:
-        with closing(urlopen(f"{endpoint_url}/not-a-deadline-route")):
-            pass
+    with (
+        pytest.raises(HTTPError) as error,
+        closing(urlopen(f"{endpoint_url}/not-a-deadline-route")),
+    ):
+        pass
 
     assert error.value.code == 404
     assert backend.unmatched_requests == [("GET", "/not-a-deadline-route")]

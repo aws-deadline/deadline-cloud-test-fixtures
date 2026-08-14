@@ -484,11 +484,13 @@ class TestPosixInstanceBuildWorker:
             err = ClientError({"Error": {"Code": "SomethingWentWrong"}}, "SendCommand")
 
             # WHEN
-            with pytest.raises(ClientError) as raised_err:
-                with patch.object(
+            with (
+                pytest.raises(ClientError) as raised_err,
+                patch.object(
                     worker.ssm_client, "send_command", side_effect=err
-                ) as mock_send_command:
-                    worker.send_command(cmd)
+                ) as mock_send_command,
+            ):
+                worker.send_command(cmd)
 
             # THEN
             assert raised_err.value is err

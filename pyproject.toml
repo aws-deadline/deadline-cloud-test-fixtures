@@ -126,20 +126,16 @@ ignore = [
   # also the canonical pytest idiom.
   "BLE001",
   "S110",
-  # `# fmt: off` / `# fmt: on` inside the worker bootstrap command lists is
-  # load-bearing: this package formats with black, which honours those regions
-  # (verified: removing them changes formatting). RUF028 only describes what
-  # `ruff format` can honour, so it is a false positive for this toolchain.
+  # The `# fmt: off` / `# fmt: on` region around the Posix worker bootstrap command
+  # list is load-bearing: this package formats with black, which honours those
+  # regions (verified: removing them reformats the embedded `echo "TIMING: ..."`
+  # literals). RUF028 only describes what `ruff format` can honour, so it does not
+  # apply to this toolchain.
   "RUF028",
   # `" ; ".join([...])` / `" && ".join([...])` is how the worker bootstrap composes
   # shell commands, one statement per line. FLY002 collapses those into single
   # 250-400 character literals, which is materially harder to read and diff.
   "FLY002",
-  # Collapsing nested `with` statements makes black emit parenthesized context
-  # managers, which are only officially valid on Python 3.10+; this package still
-  # supports 3.9. The nested form also keeps `pytest.raises` visibly wrapping the
-  # patches applied under it.
-  "SIM117",
 ]
 
 [tool.ruff.lint.per-file-ignores]
