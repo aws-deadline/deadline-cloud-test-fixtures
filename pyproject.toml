@@ -119,13 +119,13 @@ line-length = 100
 # follow. Each entry states why; prefer a targeted `noqa` over adding to this list.
 ignore = [
   "E501",
-  # Deliberate: every blind `except Exception` here is a best-effort boundary in
-  # a *test fixture*. EC2/accessibility diagnostics, the observability callback in
-  # the mock backend, and stale-resource cleanup must never mask the real test
-  # failure or break request handling. `except Exception: pytest.fail(...)` is
-  # also the canonical pytest idiom.
+  # Deliberate, across 9 sites: every blind `except Exception` here is a best-effort
+  # boundary in a *test fixture*. EC2/accessibility diagnostics, the observability
+  # callback in the mock backend, and stale-resource cleanup must never mask the real
+  # test failure or break request handling. `except Exception: pytest.fail(...)` is
+  # also the canonical pytest idiom. (S110, the `try`-`except`-`pass` half of this
+  # pattern, is only 2 sites and carries a `noqa` at each instead.)
   "BLE001",
-  "S110",
   # The `# fmt: off` / `# fmt: on` region around the Posix worker bootstrap command
   # list is load-bearing: this package formats with black, which honours those
   # regions (verified: removing them reformats the embedded `echo "TIMING: ..."`

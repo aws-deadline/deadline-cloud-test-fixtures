@@ -127,7 +127,7 @@ class MockDeadlineBackend:
         if self.log_callback is not None:
             try:
                 self.log_callback(message)
-            except Exception:
+            except Exception:  # noqa: S110
                 # Observability is best-effort and must not break request handling.
                 pass
 
