@@ -142,6 +142,14 @@ ignore = [
   "SIM117",
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# hatchling loads this build hook as a standalone module that is never registered
+# in sys.modules. PEP 563 string annotations would then make dataclasses fall back
+# to `sys.modules.get(cls.__module__).__dict__` when scanning for ClassVar/KW_ONLY,
+# which is None there and crashes the build on Python 3.14. Keep real annotation
+# objects in this file, which means keeping typing.Optional.
+"hatch_version_hook.py" = ["FA100"]
+
 [tool.ruff.lint.flake8-bugbear]
 # BundleNormalization is a frozen dataclass, so calling it in a default is safe.
 extend-immutable-calls = [

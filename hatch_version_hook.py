@@ -1,11 +1,9 @@
-from __future__ import annotations
-
 import logging
 import os
 import shutil
 import sys
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Optional
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
@@ -125,7 +123,7 @@ class CustomBuildHook(BuildHookInterface):
         return True
 
     @property
-    def copy_map(self) -> list[CopyConfig] | None:
+    def copy_map(self) -> Optional[list[CopyConfig]]:
         raw_copy_map: list[dict] = self.config.get("copy_map")
         if not raw_copy_map:
             return None
