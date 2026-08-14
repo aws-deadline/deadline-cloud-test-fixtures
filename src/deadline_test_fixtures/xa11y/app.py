@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 import xa11y
 
@@ -16,7 +15,7 @@ def find_accessibility_app(
     pid: int,
     timeout: float = STARTUP_TIMEOUT,
     *,
-    name_prefix: Optional[str] = None,
+    name_prefix: str | None = None,
 ) -> xa11y.App:
     """Find an accessibility app by PID and optional name prefix.
 

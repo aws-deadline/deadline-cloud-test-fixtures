@@ -12,7 +12,7 @@ import sys
 import threading
 import time
 import urllib.request
-from typing import Any, Optional
+from typing import Any
 
 from .backend import ADMIN_RESET_PATH, ADMIN_STATE_PATH
 from .scenario import MockDeadlineScenario
@@ -72,17 +72,17 @@ class MockDeadlineServerProcess:
 
     def __init__(
         self,
-        scenario: Optional[MockDeadlineScenario] = None,
+        scenario: MockDeadlineScenario | None = None,
         *,
         startup_timeout: float = 60.0,
     ) -> None:
         self.scenario = scenario or MockDeadlineScenario()
         self.startup_timeout = startup_timeout
-        self._process: Optional[subprocess.Popen[str]] = None
-        self.base_url: Optional[str] = None
-        self.backend: Optional[RemoteDeadlineBackend] = None
+        self._process: subprocess.Popen[str] | None = None
+        self.base_url: str | None = None
+        self.backend: RemoteDeadlineBackend | None = None
 
-    def start(self) -> "MockDeadlineServerProcess":
+    def start(self) -> MockDeadlineServerProcess:
         if self._process is not None:
             raise RuntimeError("Mock Deadline server process is already started")
         startup_deadline = time.monotonic() + self.startup_timeout
@@ -136,7 +136,7 @@ class MockDeadlineServerProcess:
 
     def _wait_ready(self, startup_deadline: float) -> None:
         assert self.backend is not None
-        last_error: Optional[Exception] = None
+        last_error: Exception | None = None
         while time.monotonic() < startup_deadline:
             try:
                 self.backend.snapshot()
@@ -159,8 +159,10 @@ class MockDeadlineServerProcess:
         self.base_url = None
         self.backend = None
 
-    def __enter__(self) -> "MockDeadlineServerProcess":
+    # PYI034 wants `Self` here, which needs typing_extensions on Python 3.9. This
+    # class is concrete and not subclassed, so the concrete return type is accurate.
+    def __enter__(self) -> MockDeadlineServerProcess:  # noqa: PYI034
         return self.start()
 
-    def __exit__(self, *exc: Any) -> None:
+    def __exit__(self, *exc: object) -> None:
         self.stop()

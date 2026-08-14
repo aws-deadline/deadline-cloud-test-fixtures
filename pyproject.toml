@@ -115,8 +115,37 @@ ignore_missing_imports = true
 line-length = 100
 
 [tool.ruff.lint]
+# Rules below are ruff >= 0.16 defaults that this package deliberately does not
+# follow. Each entry states why; prefer a targeted `noqa` over adding to this list.
 ignore = [
   "E501",
+  # Deliberate: every blind `except Exception` here is a best-effort boundary in
+  # a *test fixture*. EC2/accessibility diagnostics, the observability callback in
+  # the mock backend, and stale-resource cleanup must never mask the real test
+  # failure or break request handling. `except Exception: pytest.fail(...)` is
+  # also the canonical pytest idiom.
+  "BLE001",
+  "S110",
+  # `# fmt: off` / `# fmt: on` inside the worker bootstrap command lists is
+  # load-bearing: this package formats with black, which honours those regions
+  # (verified: removing them changes formatting). RUF028 only describes what
+  # `ruff format` can honour, so it is a false positive for this toolchain.
+  "RUF028",
+  # `" ; ".join([...])` / `" && ".join([...])` is how the worker bootstrap composes
+  # shell commands, one statement per line. FLY002 collapses those into single
+  # 250-400 character literals, which is materially harder to read and diff.
+  "FLY002",
+  # Collapsing nested `with` statements makes black emit parenthesized context
+  # managers, which are only officially valid on Python 3.10+; this package still
+  # supports 3.9. The nested form also keeps `pytest.raises` visibly wrapping the
+  # patches applied under it.
+  "SIM117",
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# BundleNormalization is a frozen dataclass, so calling it in a default is safe.
+extend-immutable-calls = [
+  "deadline_test_fixtures.job_bundle.compare.BundleNormalization",
 ]
 
 [tool.ruff.lint.isort]

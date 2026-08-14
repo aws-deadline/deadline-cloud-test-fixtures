@@ -1,13 +1,19 @@
+from __future__ import annotations
+
 import logging
 import os
 import shutil
 import sys
-
 from dataclasses import dataclass
-from hatchling.builders.hooks.plugin.interface import BuildHookInterface
-from typing import Any, Optional
+from typing import Any, ClassVar
 
-_logger = logging.Logger(__name__, logging.INFO)
+from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+_logger = logging.getLogger(__name__)
+_logger.setLevel(logging.INFO)
+# This hook owns its stdout/stderr handlers; don't also hand records to whatever
+# root handlers the surrounding hatch build has configured.
+_logger.propagate = False
 _stdout_handler = logging.StreamHandler(sys.stdout)
 _stdout_handler.addFilter(lambda record: record.levelno <= logging.INFO)
 _stderr_handler = logging.StreamHandler(sys.stderr)
@@ -62,7 +68,7 @@ class CustomBuildHook(BuildHookInterface):
     ```
     """
 
-    REQUIRED_OPTS = [
+    REQUIRED_OPTS: ClassVar[list[str]] = [
         "copy_map",
     ]
 
@@ -105,7 +111,7 @@ class CustomBuildHook(BuildHookInterface):
             opt for opt in self.REQUIRED_OPTS if opt not in self.config or not self.config[opt]
         ]
         if missing_required_opts:
-            _logger.warn(
+            _logger.warning(
                 f"Required options {missing_required_opts} are missing or empty. "
                 "Contining without copying sources to destinations...",
                 file=sys.stderr,
@@ -119,7 +125,7 @@ class CustomBuildHook(BuildHookInterface):
         return True
 
     @property
-    def copy_map(self) -> Optional[list[CopyConfig]]:
+    def copy_map(self) -> list[CopyConfig] | None:
         raw_copy_map: list[dict] = self.config.get("copy_map")
         if not raw_copy_map:
             return None

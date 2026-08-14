@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
-from typing import Any, Mapping
+from typing import Any
 
 FAKE_ACCOUNT_ID = "123456789012"
 DEFAULT_FARM_ID = "farm-0000000000000000000000000000000a"
@@ -94,7 +95,7 @@ class MockDeadlineScenario:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "MockDeadlineScenario":
+    def from_dict(cls, value: Mapping[str, Any]) -> MockDeadlineScenario:
         return cls(
             farm=value["farm"],
             queue=value["queue"],

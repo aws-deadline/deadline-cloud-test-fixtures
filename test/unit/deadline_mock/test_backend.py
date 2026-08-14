@@ -1,8 +1,9 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+from __future__ import annotations
+
 import json
 from contextlib import closing
-from typing import Union
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -75,7 +76,7 @@ def test_http_server_records_unmatched_requests(mock_server):
 
 def test_http_server_returns_validation_errors_for_malformed_requests(mock_server):
     _, endpoint_url = mock_server
-    requests: list[Union[str, Request]] = [
+    requests: list[str | Request] = [
         f"{endpoint_url}/2023-10-12/farms?maxResults=invalid",
         Request(
             f"{endpoint_url}/2023-10-12/farms",

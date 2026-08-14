@@ -4,7 +4,8 @@ import os
 import pathlib
 import re
 import subprocess
-from typing import Any, Generator
+from collections.abc import Generator
+from typing import Any
 from unittest.mock import ANY, MagicMock, call, mock_open, patch
 
 import boto3
@@ -165,7 +166,7 @@ class TestPosixInstanceBuildWorker:
             instance_shutdown_behavior="terminate",
         )
 
-    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    @patch.object(mod, "open", mock_open(read_data=b"mock data"))
     def test_start(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         s3_files = [
@@ -197,7 +198,7 @@ class TestPosixInstanceBuildWorker:
         mock_setup_worker_agent.assert_called_once()
         mock_wait_until_userdata_finishes.assert_called_once()
 
-    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    @patch.object(mod, "open", mock_open(read_data=b"mock data"))
     def test_start_userdata_successful(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         s3_files = [
@@ -246,7 +247,7 @@ class TestPosixInstanceBuildWorker:
         mock_send_command.assert_called_once()
         mock_get_command_invocation.assert_called_once()
 
-    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    @patch.object(mod, "open", mock_open(read_data=b"mock data"))
     def test_start_userdata_unsuccessful(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         s3_files = [
@@ -298,7 +299,7 @@ class TestPosixInstanceBuildWorker:
         mock_get_command_invocation.assert_called_once()
         assert failure_content in str(excinfo.value)
 
-    @patch.object(mod, "open", mock_open(read_data="mock data".encode()))
+    @patch.object(mod, "open", mock_open(read_data=b"mock data"))
     def test_start_userdata_timed_out(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
         s3_files = [
@@ -332,7 +333,7 @@ class TestPosixInstanceBuildWorker:
         # We don't want to actually match real files, just limit src paths to absolute paths
         with (
             patch.object(mod.glob, "glob", lambda path: [path]),
-            patch.object(mod, "open", mock_open(read_data="mock data".encode())),
+            patch.object(mod, "open", mock_open(read_data=b"mock data")),
         ):
             # WHEN
             s3_files = worker._stage_s3_bucket()

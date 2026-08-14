@@ -21,16 +21,13 @@ class CopyrightHeaderNotFoundException(Exception):
 
 def _check_file(filename: Path) -> None:
     with open(filename) as infile:
-        lines_read = 0
-        for line in infile:
+        for lines_read, line in enumerate(infile, start=1):
             if _copyright_header_re.search(line):
                 return  # success
-            lines_read += 1
             if lines_read > 10:
                 raise CopyrightHeaderNotFoundException(filename)
-        else:
-            # __init__.py files are usually empty, this is to catch that.
-            raise CopyrightHeaderNotFoundException(filename)
+        # __init__.py files are usually empty, this is to catch that.
+        raise CopyrightHeaderNotFoundException(filename)
 
 
 def _is_version_file(filename: Path) -> bool:
