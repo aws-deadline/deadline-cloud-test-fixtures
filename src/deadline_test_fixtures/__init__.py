@@ -1,4 +1,5 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+from ._version import __version__ as version
 from .deadline import (
     CloudWatchLogEvent,
     CommandResult,
@@ -7,14 +8,13 @@ from .deadline import (
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
     EC2InstanceWorker,
-    WindowsInstanceWorkerBase,
-    WindowsInstanceBuildWorker,
-    PosixInstanceWorkerBase,
-    PosixInstanceBuildWorker,
-    Job,
+    Ec2Tag,
     Farm,
     Fleet,
+    Job,
     PipInstall,
+    PosixInstanceBuildWorker,
+    PosixInstanceWorkerBase,
     Queue,
     QueueFleetAssociation,
     Session,
@@ -22,7 +22,8 @@ from .deadline import (
     Step,
     Task,
     TaskStatus,
-    Ec2Tag,
+    WindowsInstanceBuildWorker,
+    WindowsInstanceWorkerBase,
 )
 from .fixtures import (
     BootstrapResources,
@@ -42,12 +43,11 @@ from .models import (
     CodeArtifactRepositoryInfo,
     JobAttachmentSettings,
     JobRunAsUser,
+    OperatingSystem,
     PosixSessionUser,
     S3Object,
     ServiceModel,
-    OperatingSystem,
 )
-from ._version import __version__ as version  # noqa
 
 __all__ = [
     "BootstrapResources",
@@ -60,6 +60,7 @@ __all__ = [
     "DeadlineWorkerConfiguration",
     "DockerContainerWorker",
     "EC2InstanceWorker",
+    "Ec2Tag",
     "Farm",
     "Fleet",
     "Job",
@@ -90,7 +91,6 @@ __all__ = [
     "install_service_model",
     "service_model",
     "version",
-    "worker_config",
     "worker",
-    "Ec2Tag",
+    "worker_config",
 ]

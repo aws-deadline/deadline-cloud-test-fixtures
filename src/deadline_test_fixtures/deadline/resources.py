@@ -10,7 +10,7 @@ from collections.abc import Generator
 from dataclasses import asdict, dataclass, fields
 from datetime import timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Union
+from typing import TYPE_CHECKING, Any, Callable, Literal, Union
 
 from botocore.client import BaseClient
 
@@ -171,7 +171,7 @@ class Fleet:
         fleet.wait_for_desired_status(
             client=client,
             desired_status="ACTIVE",
-            allowed_statuses=set(["CREATE_IN_PROGRESS"]),
+            allowed_statuses={"CREATE_IN_PROGRESS"},
             interval_s=fleet_active_interval_s,
             max_retries=fleet_active_num_retries,
         )
@@ -193,11 +193,11 @@ class Fleet:
         *,
         client: DeadlineClient,
         desired_status: str,
-        allowed_statuses: set[str] = set(),
+        allowed_statuses: set[str] | None = None,
         interval_s: int = 10,
         max_retries: int = 6,
     ) -> None:
-        valid_statuses = set([desired_status]).union(allowed_statuses)
+        valid_statuses = {desired_status}.union(allowed_statuses or set())
 
         # Temporary until we have waiters
         def is_fleet_desired_status() -> bool:
@@ -312,7 +312,7 @@ class QueueFleetAssociation:
             LOG.info(f"queue-fleet association status is already {current_qfa_status}")
 
         # Temporary until we have waiters
-        valid_statuses = set(["STOPPED", stop_mode])
+        valid_statuses = {"STOPPED", stop_mode}
 
         def is_qfa_in_desired_status() -> bool:
             response = call_api(
@@ -387,13 +387,11 @@ class TaskStatus(StrEnum):
     NOT_COMPATIBLE = "NOT_COMPATIBLE"
 
 
-COMPLETE_TASK_STATUSES = set(
-    (
-        TaskStatus.CANCELED,
-        TaskStatus.FAILED,
-        TaskStatus.SUCCEEDED,
-    )
-)
+COMPLETE_TASK_STATUSES = {
+    TaskStatus.CANCELED,
+    TaskStatus.FAILED,
+    TaskStatus.SUCCEEDED,
+}
 
 
 @dataclass
@@ -617,9 +615,12 @@ class Job:
             session_id = session["sessionId"]
             filter_log_events_pages: PageIterator = call_api(
                 description=f"Fetching log events for session {session_id} in log group {log_group_name}",
+                # B023: call_api() invokes fn() immediately within this iteration, so
+                # closing over the loop variable is not a hazard here. Binding it as a
+                # default argument instead would defeat mypy's lambda inference.
                 fn=lambda: filter_log_events_paginator.paginate(
                     logGroupName=log_group_name,
-                    logStreamNames=[session_id],
+                    logStreamNames=[session_id],  # noqa: B023
                 ),
             )
             log_events = filter_log_events_pages.build_full_result()
@@ -643,7 +644,7 @@ class Job:
             queue=self.queue,
             job_id=self.id,
         )
-        all_field_names = set([f.name for f in fields(self)])
+        all_field_names = {f.name for f in fields(self)}
         assert all(k in all_field_names for k in kwargs)
         for k, v in kwargs.items():
             object.__setattr__(self, k, v)
@@ -682,7 +683,7 @@ class Job:
         *,
         client: DeadlineClient,
         wait_interval_sec: int = 10,
-        max_retries: Optional[int] = 20,
+        max_retries: int | None = 20,
     ) -> None:
         """
         Waits until the job is complete.
@@ -1426,7 +1427,7 @@ class CloudWatchLogs:
 
         full_session_log = "\n".join(le.message for le in self.logs)
 
-        assert True if expected_pattern.search(full_session_log) is None else False, failure_msg
+        assert expected_pattern.search(full_session_log) is None, failure_msg
 
 
 @dataclass

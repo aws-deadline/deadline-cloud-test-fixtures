@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping, Optional
 
 MOCK_ACCESS_KEY = "testing"
 MOCK_SECRET_KEY = "testing"
@@ -48,7 +48,7 @@ def build_mock_environment(
     deadline_endpoint_url: str,
     config_path: Path,
     home_dir: Path,
-    mock_mode_variable: Optional[str] = "DEADLINE_CLOUD_MOCK_MODE",
+    mock_mode_variable: str | None = "DEADLINE_CLOUD_MOCK_MODE",
 ) -> dict[str, str]:
     """Create a hermetic environment for a Deadline client subprocess.
 

@@ -2,22 +2,22 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime, timedelta, timezone
-import os
+from uuid import uuid4
+
 from botocore.client import BaseClient
 from botocore.exceptions import ClientError, WaiterError
 
-from .deadline.client import DeadlineClient
 from .deadline import (
     Farm,
     Queue,
 )
-
+from .deadline.client import DeadlineClient
 from .models import (
     JobAttachmentSettings,
 )
-from uuid import uuid4
 
 LOG = logging.getLogger(__name__)
 

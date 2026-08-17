@@ -7,10 +7,11 @@ import os
 import re
 import tempfile
 from abc import ABC, abstractproperty
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Generator, Literal
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)

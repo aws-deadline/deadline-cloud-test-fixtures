@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 from __future__ import annotations
 
+from ..models import CodeArtifactRepositoryInfo
 from .cfn import (
     Bucket,
     CfnStack,
@@ -8,7 +9,6 @@ from .cfn import (
     Role,
 )
 from .util import create_secure_bucket
-from ..models import CodeArtifactRepositoryInfo
 
 
 class WorkerBootstrapStack(CfnStack):  # pragma: no cover

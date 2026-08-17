@@ -1,5 +1,5 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
-from typing import Generator
+from collections.abc import Generator
 from unittest.mock import MagicMock
 
 import boto3
@@ -128,8 +128,7 @@ class TestCfnStack:
             assert raised_err.value is error
             if isinstance(error, ClientError):
                 assert (
-                    f"Unexpected error when attempting to update stack {stack.name}: "
-                    in caplog.text
+                    f"Unexpected error when attempting to update stack {stack.name}" in caplog.text
                 )
 
     def test_destroy(
@@ -255,7 +254,7 @@ class TestCfnResource:
 
             with pytest.raises(ValueError) as raised_err:
                 # WHEN
-                resource.physical_name
+                _ = resource.physical_name
 
             # THEN
             assert (
@@ -272,7 +271,7 @@ class TestCfnResource:
 
             with pytest.raises(ValueError) as raised_err:
                 # WHEN
-                resource.physical_name
+                _ = resource.physical_name
 
             # THEN
             assert (

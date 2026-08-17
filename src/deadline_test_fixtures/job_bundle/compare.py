@@ -8,10 +8,11 @@ import copy
 import json
 import re
 import subprocess
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import yaml
 

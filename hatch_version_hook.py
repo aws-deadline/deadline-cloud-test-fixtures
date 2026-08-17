@@ -1,19 +1,32 @@
+# NOTE: do not add `from __future__ import annotations` to this file. hatchling
+# execs this module without registering it in sys.modules, so PEP 563 string
+# annotations make dataclasses resolve CopyConfig's ClassVar/KW_ONLY markers via
+# `sys.modules.get(cls.__module__).__dict__`, which is None here. That crashes the
+# build on Python 3.14. `FA100` is disabled for this file in pyproject.toml.
 import logging
 import os
 import shutil
 import sys
-
 from dataclasses import dataclass
-from hatchling.builders.hooks.plugin.interface import BuildHookInterface
-from typing import Any, Optional
+from typing import Any, ClassVar, Optional
 
-_logger = logging.Logger(__name__, logging.INFO)
-_stdout_handler = logging.StreamHandler(sys.stdout)
-_stdout_handler.addFilter(lambda record: record.levelno <= logging.INFO)
-_stderr_handler = logging.StreamHandler(sys.stderr)
-_stderr_handler.addFilter(lambda record: record.levelno > logging.INFO)
-_logger.addHandler(_stdout_handler)
-_logger.addHandler(_stderr_handler)
+from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+_logger = logging.getLogger(__name__)
+_logger.setLevel(logging.INFO)
+# This hook owns its stdout/stderr handlers; don't also hand records to whatever
+# root handlers the surrounding hatch build has configured.
+_logger.propagate = False
+# hatchling execs this module once per builder, so a single `hatch build` (sdist +
+# wheel) runs it twice against the same global logger. Only attach handlers once,
+# or every build line is emitted N times.
+if not _logger.handlers:
+    _stdout_handler = logging.StreamHandler(sys.stdout)
+    _stdout_handler.addFilter(lambda record: record.levelno <= logging.INFO)
+    _stderr_handler = logging.StreamHandler(sys.stderr)
+    _stderr_handler.addFilter(lambda record: record.levelno > logging.INFO)
+    _logger.addHandler(_stdout_handler)
+    _logger.addHandler(_stderr_handler)
 
 
 @dataclass
@@ -62,7 +75,7 @@ class CustomBuildHook(BuildHookInterface):
     ```
     """
 
-    REQUIRED_OPTS = [
+    REQUIRED_OPTS: ClassVar[list[str]] = [
         "copy_map",
     ]
 
@@ -105,10 +118,12 @@ class CustomBuildHook(BuildHookInterface):
             opt for opt in self.REQUIRED_OPTS if opt not in self.config or not self.config[opt]
         ]
         if missing_required_opts:
-            _logger.warn(
+            # No `file=` kwarg: Logger.warning rejects it (it is a leftover from a
+            # print call). The stderr handler filter above already routes this record
+            # to stderr.
+            _logger.warning(
                 f"Required options {missing_required_opts} are missing or empty. "
-                "Contining without copying sources to destinations...",
-                file=sys.stderr,
+                "Contining without copying sources to destinations..."
             )
             return False
 

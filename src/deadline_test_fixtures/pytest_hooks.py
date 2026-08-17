@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+from __future__ import annotations
+
 import logging as _logging
-from typing import Optional as _Optional
 
 import pytest as _pytest
 
@@ -26,7 +27,7 @@ def pytest_sessionstart(session: _pytest.Session):
         handler.setFormatter(formatter)
 
 
-def pytest_runtest_logstart(nodeid: str, location: tuple[str, _Optional[int], str]):
+def pytest_runtest_logstart(nodeid: str, location: tuple[str, int | None, str]):
     # Apply test ID log filter
     log_filter = _PytestIdLoggerFilter(nodeid)
     for handler in _root_logger.handlers:
@@ -35,7 +36,7 @@ def pytest_runtest_logstart(nodeid: str, location: tuple[str, _Optional[int], st
 
 
 @_pytest.hookimpl(wrapper=True)
-def pytest_runtest_teardown(item: _pytest.Item, nextitem: _Optional[_pytest.Item]):
+def pytest_runtest_teardown(item: _pytest.Item, nextitem: _pytest.Item | None):
     # Remove test ID log filter
     log_filter = _log_filters.pop(item.nodeid, None)
     if log_filter:

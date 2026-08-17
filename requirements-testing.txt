@@ -11,4 +11,4 @@ moto[cloudformation,s3] == 5.1.*; python_version <= "3.9"
 mypy == 2.3.*; python_version > "3.9"
 mypy == 1.19.*; python_version <= "3.9"
 types-PyYAML == 6.*
-ruff == 0.15.*
+ruff == 0.16.*

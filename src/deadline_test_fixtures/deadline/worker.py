@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import InitVar, dataclass, field, replace
-from typing import TYPE_CHECKING, Any, ClassVar, Dict, Optional, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import botocore.client
 import botocore.exceptions
@@ -86,7 +86,7 @@ class WorkerLogConfig:
 class CommandResult:  # pragma: no cover
     exit_code: int
     stdout: str
-    stderr: Optional[str] = None
+    stderr: str | None = None
 
     def __str__(self) -> str:
         return "\n".join(
@@ -180,7 +180,7 @@ class DeadlineWorkerConfiguration:
     """Worker agent session_runtime setting (worker.toml [worker] section).
     Valid values: "python", "rust", "service-selected"."""
 
-    worker_env_var: Dict[str, str] | None = None
+    worker_env_var: dict[str, str] | None = None
     """Additional feature flag to configure for workers"""
 
 
@@ -201,8 +201,8 @@ class EC2InstanceWorker(DeadlineWorker):
 
     additional_tags: list[Ec2Tag] = field(default_factory=list)
 
-    instance_id: Optional[str] = field(init=False, default=None)
-    worker_id: Optional[str] = field(init=False, default=None)
+    instance_id: str | None = field(init=False, default=None)
+    worker_id: str | None = field(init=False, default=None)
 
     USERDATA_SUCCESS_STRING: ClassVar[str] = "Userdata finished successfully"
     USERDATA_FAILURE_STRING: ClassVar[str] = "Userdata failed to finish"
@@ -210,9 +210,9 @@ class EC2InstanceWorker(DeadlineWorker):
     """
     Option to override the AMI ID for the EC2 instance. If no override is provided, the default will depend on the subclass being instansiated.
     """
-    override_ami_id: InitVar[Optional[str]] = None
+    override_ami_id: InitVar[str | None] = None
 
-    def __post_init__(self, override_ami_id: Optional[str] = None):
+    def __post_init__(self, override_ami_id: str | None):
         if override_ami_id:
             self._ami_id = override_ami_id
 
@@ -290,8 +290,8 @@ class EC2InstanceWorker(DeadlineWorker):
 
             try:
                 self.delete()
-            except botocore.exceptions.ClientError as error:
-                LOG.exception(f"Failed to delete worker: {error}")
+            except botocore.exceptions.ClientError:
+                LOG.exception("Failed to delete worker")
                 raise
 
     def delete(self):
@@ -302,8 +302,8 @@ class EC2InstanceWorker(DeadlineWorker):
                 workerId=self.worker_id,
             )
             LOG.info(f"{self.worker_id} has been deleted from {self.configuration.fleet.id}")
-        except botocore.exceptions.ClientError as error:
-            LOG.exception(f"Failed to delete worker: {error}")
+        except botocore.exceptions.ClientError:
+            LOG.exception("Failed to delete worker")
             raise
 
     def wait_until_stopped(
@@ -345,11 +345,11 @@ class EC2InstanceWorker(DeadlineWorker):
                 workerId=self.worker_id,
                 status="STOPPED",
             )
-        except botocore.exceptions.ClientError as error:
-            LOG.exception(f"Failed to update worker status: {error}")
+        except botocore.exceptions.ClientError:
+            LOG.exception("Failed to update worker status")
             raise
 
-    def _get_worker_logs(self) -> Optional[WorkerLogConfig]:
+    def _get_worker_logs(self) -> WorkerLogConfig | None:
         """Get the log group and log stream for the worker. Retain the API structure"""
         response = self.deadline_client.get_worker(
             farmId=self.configuration.farm_id,
@@ -370,7 +370,7 @@ class EC2InstanceWorker(DeadlineWorker):
 
     def get_logs(self, *, logs_client: botocore.client.BaseClient) -> WorkerLog:
         # Get the worker log group and stream from the service.
-        log_config: Optional[WorkerLogConfig] = self._get_worker_logs()
+        log_config: WorkerLogConfig | None = self._get_worker_logs()
         if not log_config:
             return WorkerLog(worker_id=self.worker_id, logs=[])  # type: ignore[arg-type]
 
@@ -444,7 +444,7 @@ class EC2InstanceWorker(DeadlineWorker):
                 LOG.warning(
                     f"Unable to deliver command {command_id} to instance {self.instance_id} (received UndeliverableError)."
                 )
-                raise e
+                raise
 
         ssm_command_result = self.ssm_client.get_command_invocation(
             InstanceId=self.instance_id,
@@ -490,9 +490,9 @@ class EC2InstanceWorker(DeadlineWorker):
                         Key=key,
                         Body=f,
                     )
-            except botocore.exceptions.ClientError as e:
+            except botocore.exceptions.ClientError:
                 LOG.exception(
-                    f"Failed to upload file {local_path} to s3://{self.bootstrap_bucket_name}/{key}: {e}"
+                    f"Failed to upload file {local_path} to s3://{self.bootstrap_bucket_name}/{key}"
                 )
                 raise
 
@@ -1281,7 +1281,7 @@ touch "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}"
 class DockerContainerWorker(DeadlineWorker):
     configuration: DeadlineWorkerConfiguration
 
-    _container_id: Optional[str] = field(init=False, default=None)
+    _container_id: str | None = field(init=False, default=None)
 
     def __post_init__(self) -> None:
         # Do not install Worker agent service since it's recommended to avoid systemd usage on Docker containers
@@ -1355,7 +1355,7 @@ class DockerContainerWorker(DeadlineWorker):
                 for line in iter(proc.stdout.readline, ""):
                     LOG.info(line.rstrip("\r\n"))
         except Exception as e:  # pragma: no cover
-            LOG.exception(f"Failed to start Worker agent Docker container: {e}")
+            LOG.exception("Failed to start Worker agent Docker container")
             _handle_subprocess_error(e)
             raise
         else:
@@ -1372,7 +1372,7 @@ class DockerContainerWorker(DeadlineWorker):
                 timeout=1,
             ).rstrip("\r\n")
         except Exception as e:  # pragma: no cover
-            LOG.exception(f"Failed to get Docker container ID: {e}")
+            LOG.exception("Failed to get Docker container ID")
             _handle_subprocess_error(e)
             raise
         else:
@@ -1386,8 +1386,8 @@ class DockerContainerWorker(DeadlineWorker):
         LOG.info(f"Terminating Worker agent process in Docker container {self._container_id}")
         try:
             self.send_command(f"pkill --signal term -f {self.configuration.agent_user}")
-        except Exception as e:  # pragma: no cover
-            LOG.exception(f"Failed to terminate Worker agent process: {e}")
+        except Exception:  # pragma: no cover
+            LOG.exception("Failed to terminate Worker agent process")
             raise
         else:
             LOG.info("Worker agent process terminated")
@@ -1402,7 +1402,7 @@ class DockerContainerWorker(DeadlineWorker):
                 timeout=30,
             )
         except Exception as e:  # pragma: noc over
-            LOG.exception(f"Failed to stop Docker container {self._container_id}: {e}")
+            LOG.exception(f"Failed to stop Docker container {self._container_id}")
             _handle_subprocess_error(e)
             raise
         else:
@@ -1443,7 +1443,7 @@ class DockerContainerWorker(DeadlineWorker):
             )
         except Exception as e:
             if not quiet:  # pragma: no cover
-                LOG.exception(f"Failed to run command: {e}")
+                LOG.exception("Failed to run command")
                 _handle_subprocess_error(e)
             raise
         else:
@@ -1454,7 +1454,7 @@ class DockerContainerWorker(DeadlineWorker):
             )
 
     def get_worker_id(self) -> str:
-        cmd_result: Optional[CommandResult] = None
+        cmd_result: CommandResult | None = None
 
         def got_worker_id() -> bool:
             nonlocal cmd_result

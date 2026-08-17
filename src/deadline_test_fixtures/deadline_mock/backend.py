@@ -12,7 +12,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable, Optional
+from typing import Any, Callable, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 import botocore.session
@@ -34,7 +34,10 @@ def route(method: str, path: str, operation: str) -> Callable:
     """Associate a backend method with a Deadline REST-JSON route."""
 
     def decorator(function: Callable) -> Callable:
-        setattr(function, "__http_route__", (method, f"{API_PREFIX}{path}", operation))
+        # B010: setattr is deliberate. `Callable` has no `__http_route__` attribute,
+        # so a direct assignment fails mypy's attr-defined check.
+        http_route = (method, f"{API_PREFIX}{path}", operation)
+        setattr(function, "__http_route__", http_route)  # noqa: B010
         return function
 
     return decorator
@@ -59,7 +62,7 @@ class MockDeadlineBackend:
 
     def __init__(
         self,
-        scenario: Optional[MockDeadlineScenario] = None,
+        scenario: MockDeadlineScenario | None = None,
         *,
         validate_responses: bool = True,
     ) -> None:
@@ -67,7 +70,7 @@ class MockDeadlineBackend:
         self.validate_responses = validate_responses
         self.response_delay_s = self.scenario.response_delay_s
         self._lock = threading.Lock()
-        self.log_callback: Optional[Callable[[str], None]] = None
+        self.log_callback: Callable[[str], None] | None = None
         self.farms: dict[str, dict[str, Any]] = {}
         self.queues: dict[tuple[str, str], dict[str, Any]] = {}
         self.queue_environments: dict[tuple[str, str], list[dict[str, Any]]] = {}
@@ -124,7 +127,7 @@ class MockDeadlineBackend:
         if self.log_callback is not None:
             try:
                 self.log_callback(message)
-            except Exception:
+            except Exception:  # noqa: S110
                 # Observability is best-effort and must not break request handling.
                 pass
 
@@ -225,7 +228,7 @@ def _discover_routes(backend: MockDeadlineBackend) -> list[tuple[str, re.Pattern
 class _ResponseValidator:
     """Filter responses to the installed botocore model, then validate them."""
 
-    _TYPE_DEFAULTS = {
+    _TYPE_DEFAULTS: ClassVar[dict[str, Any]] = {
         "string": "",
         "integer": 0,
         "long": 0,
@@ -279,14 +282,14 @@ class _ResponseValidator:
 
 def _make_handler(
     routes: list[tuple[str, re.Pattern, Callable, str]],
-    validator: Optional[_ResponseValidator],
+    validator: _ResponseValidator | None,
     backend: MockDeadlineBackend,
 ) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
             return
 
-        def _send_json(self, status: int, body: Any, *, error_code: Optional[str] = None) -> None:
+        def _send_json(self, status: int, body: Any, *, error_code: str | None = None) -> None:
             payload = json.dumps(body, default=_json_default).encode("utf-8")
             try:
                 self.send_response(status)
@@ -385,13 +388,13 @@ def _make_handler(
                 error_code="NotFoundException",
             )
 
-        def do_GET(self) -> None:  # noqa: N802
+        def do_GET(self) -> None:
             self._dispatch("GET")
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             self._dispatch("POST")
 
-        def do_PATCH(self) -> None:  # noqa: N802
+        def do_PATCH(self) -> None:
             self._dispatch("PATCH")
 
     return Handler
