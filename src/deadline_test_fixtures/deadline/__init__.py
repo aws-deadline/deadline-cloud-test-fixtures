@@ -31,12 +31,12 @@ from .worker import (
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
     EC2InstanceWorker,
-    PosixInstanceWorkerBase,
-    PosixInstanceBuildWorker,
-    WindowsInstanceWorkerBase,
-    WindowsInstanceBuildWorker,
-    PipInstall,
     Ec2Tag,
+    PipInstall,
+    PosixInstanceBuildWorker,
+    PosixInstanceWorkerBase,
+    WindowsInstanceBuildWorker,
+    WindowsInstanceWorkerBase,
 )
 
 __all__ = [
@@ -48,6 +48,7 @@ __all__ = [
     "DependencyCounts",
     "DockerContainerWorker",
     "EC2InstanceWorker",
+    "Ec2Tag",
     "Farm",
     "Fleet",
     "FloatTaskParameterValue",
@@ -73,5 +74,4 @@ __all__ = [
     "WindowsInstanceBuildWorker",
     "WindowsInstanceWorkerBase",
     "WorkerLog",
-    "Ec2Tag",
 ]

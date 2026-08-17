@@ -1,8 +1,9 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+from __future__ import annotations
+
 import dataclasses
 from dataclasses import dataclass
-from typing import Optional
 
 from botocore.exceptions import ClientError as OriginalClientError
 
@@ -57,8 +58,8 @@ class StubDeadlineClient:
 
     farm: FarmInfo
     queue: QueueInfo
-    job: Optional[JobInfo] = None
-    job_attachments_bucket_name: Optional[str] = None
+    job: JobInfo | None = None
+    job_attachments_bucket_name: str | None = None
 
     def create_job(self, **kwargs) -> dict:
         self.job = JobInfo(jobId="job-123", **kwargs)

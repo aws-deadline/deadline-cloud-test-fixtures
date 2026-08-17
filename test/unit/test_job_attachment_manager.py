@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
-from typing import Generator
 from unittest.mock import MagicMock, patch
 
 import boto3
@@ -9,8 +9,8 @@ import pytest
 from botocore.exceptions import ClientError, WaiterError
 from moto import mock_aws
 
-from deadline_test_fixtures import job_attachment_manager as jam_module
 from deadline_test_fixtures import DeadlineClient, JobAttachmentManager
+from deadline_test_fixtures import job_attachment_manager as jam_module
 
 OLD = datetime.now(timezone.utc) - timedelta(days=7)
 # Ten seconds past the 1-day STALE_QUEUE_MIN_AGE cutoff. Hardcoded (not imported
@@ -109,15 +109,13 @@ class TestJobAttachmentManager:
             bucket.create()
             bucket.put_object(
                 Key=job_attachment_manager.bucket_root_prefix + "/" + "test-object",
-                Body="Hello world".encode(),
+                Body=b"Hello world",
             )
             bucket.put_object(
                 Key=job_attachment_manager.bucket_root_prefix + "/" + "test-object-2",
-                Body="Hello world 2".encode(),
+                Body=b"Hello world 2",
             )
-            bucket.put_object(
-                Key="differen-prefix" + "/" + "test-object-2", Body="Hello world 2".encode()
-            )
+            bucket.put_object(Key="differen-prefix" + "/" + "test-object-2", Body=b"Hello world 2")
             assert len(list(bucket.objects.all())) == 3
 
             # WHEN

@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 import xa11y
 
@@ -16,7 +15,7 @@ def find_accessibility_app(
     pid: int,
     timeout: float = STARTUP_TIMEOUT,
     *,
-    name_prefix: Optional[str] = None,
+    name_prefix: str | None = None,
 ) -> xa11y.App:
     """Find an accessibility app by PID and optional name prefix.
 
@@ -35,7 +34,7 @@ def find_accessibility_app(
                 ]
             if matching_pid:
                 return matching_pid[0]
-        except Exception:
+        except Exception:  # noqa: S110
             # Accessibility backends can fail transiently while applications start.
             pass
         time.sleep(0.25)

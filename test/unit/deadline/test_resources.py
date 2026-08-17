@@ -102,7 +102,7 @@ def job(
         lifecycle_status=mod.JobLifecycleStatus.CREATE_COMPLETE,
         lifecycle_status_message="Nice",
         priority=1,
-        created_at=datetime.datetime.now(),
+        created_at=datetime.datetime.now(tz=datetime.timezone.utc),
         created_by="test-user",
     )
 
@@ -125,7 +125,7 @@ def step(
         queue=queue,
         job=job,
         name="Step Name",
-        created_at=datetime.datetime.now(),
+        created_at=datetime.datetime.now(tz=datetime.timezone.utc),
         created_by="test-user",
         lifecycle_status=mod.StepLifecycleStatus.CREATE_COMPLETE,
         task_run_status=TaskStatus.SUCCEEDED,
@@ -168,7 +168,7 @@ def task_id() -> str:
 
 @pytest.fixture
 def task_created_at() -> datetime.datetime:
-    return datetime.datetime.now()
+    return datetime.datetime.now(tz=datetime.timezone.utc)
 
 
 @pytest.fixture
@@ -275,7 +275,7 @@ def worker_id() -> str:
 
 @pytest.fixture
 def session_started_at() -> datetime.datetime:
-    return datetime.datetime.now()
+    return datetime.datetime.now(tz=datetime.timezone.utc)
 
 
 @pytest.fixture
@@ -488,7 +488,7 @@ class TestFleet:
         mock_wait_for_desired_status.assert_called_once_with(
             client=mock_client,
             desired_status="ACTIVE",
-            allowed_statuses=set(["CREATE_IN_PROGRESS"]),
+            allowed_statuses={"CREATE_IN_PROGRESS"},
             interval_s=10,
             max_retries=6 * 5,  # 5 minutes for CMF fleet creation
         )
@@ -507,7 +507,7 @@ class TestFleet:
         def test_waits(self, fleet: Fleet) -> None:
             # GIVEN
             desired_status = "ACTIVE"
-            allowed_statuses = set(["CREATE_IN_PROGRESS"])
+            allowed_statuses = {"CREATE_IN_PROGRESS"}
             mock_client = MagicMock()
             mock_client.get_fleet.side_effect = [
                 {"status": "CREATE_IN_PROGRESS"},
@@ -529,7 +529,7 @@ class TestFleet:
         def test_raises_when_nonvalid_status_is_reached(self, fleet: Fleet) -> None:
             # GIVEN
             desired_status = "ACTIVE"
-            allowed_statuses = set(["CREATE_IN_PROGRESS"])
+            allowed_statuses = {"CREATE_IN_PROGRESS"}
             mock_client = MagicMock()
             mock_client.get_fleet.side_effect = [
                 {"status": "BAD"},
@@ -773,7 +773,7 @@ class TestJob:
         task_run_status_counts = TestJob.task_run_status_counts(
             **{target_task_run_status.lower(): 1}
         )
-        created_at = datetime.datetime.now()
+        created_at = datetime.datetime.now(tz=datetime.timezone.utc)
         mock_client.get_job.return_value = {
             "jobId": job_id,
             "name": "Test Job",
@@ -841,7 +841,7 @@ class TestJob:
         kwargs that are compatible with Job.__init__
         """
         # GIVEN
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(tz=datetime.timezone.utc)
         job_id = "job-123"
         response = {
             "jobId": job_id,
@@ -1384,7 +1384,6 @@ class TestJob:
                 # Call predicate twice to simulate retry behavior
                 predicate()  # First call returns False (task without session action)
                 predicate()  # Second call returns True (task with session action)
-                return None
 
             mock_wait_for.side_effect = wait_for_side_effect
 
@@ -1416,16 +1415,16 @@ class TestJob:
         # GIVEN
         step_id = "step-97f70ac0e02d4dc0acb589b9bd890981"
         step_name = "a step"
-        created_at = datetime.datetime(2024, 9, 3)
+        created_at = datetime.datetime(2024, 9, 3, tzinfo=datetime.timezone.utc)
         created_by = "username"
         lifecycle_status = "CREATE_COMPLETE"
         task_run_status = "ASSIGNED"
         lifecycle_status_message = ("a message",)
         target_task_run_status = ("READY",)
-        updated_at = datetime.datetime(2024, 9, 3)
+        updated_at = datetime.datetime(2024, 9, 3, tzinfo=datetime.timezone.utc)
         updated_by = "someone"
-        started_at = datetime.datetime(2024, 9, 3)
-        ended_at = datetime.datetime(2024, 9, 3)
+        started_at = datetime.datetime(2024, 9, 3, tzinfo=datetime.timezone.utc)
+        ended_at = datetime.datetime(2024, 9, 3, tzinfo=datetime.timezone.utc)
         task_run_status_counts = {
             "PENDING": 0,
             "READY": 0,
@@ -1520,15 +1519,15 @@ class TestStep:
         mock_get_paginator: MagicMock = deadline_client.get_paginator
         mock_paginate: MagicMock = mock_get_paginator.return_value.paginate
         task_id = "task-b73de3af607f472687cafb16def7664e"
-        created_at = datetime.datetime.now()
+        created_at = datetime.datetime.now(tz=datetime.timezone.utc)
         created_by = "someone"
         run_status = "READY"
         failure_retry_count = 5
         target_task_run_status = "RUNNING"
-        updated_at = datetime.datetime.now()
+        updated_at = datetime.datetime.now(tz=datetime.timezone.utc)
         updated_by = "someoneelse"
-        started_at = datetime.datetime.now()
-        ended_at = datetime.datetime.now()
+        started_at = datetime.datetime.now(tz=datetime.timezone.utc)
+        ended_at = datetime.datetime.now(tz=datetime.timezone.utc)
         mock_paginate.return_value = [
             {
                 "tasks": [
@@ -1597,9 +1596,9 @@ class TestTask:
         # GIVEN
         deadline_client = MagicMock()
         mock_get_session: MagicMock = deadline_client.get_session
-        started_at = datetime.datetime.now()
-        ended_at = datetime.datetime.now()
-        updated_at = datetime.datetime.now()
+        started_at = datetime.datetime.now(tz=datetime.timezone.utc)
+        ended_at = datetime.datetime.now(tz=datetime.timezone.utc)
+        updated_at = datetime.datetime.now(tz=datetime.timezone.utc)
         updated_by = "taskupdater"
         mock_get_session.return_value = {
             "sessionId": session_id,

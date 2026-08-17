@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import botocore.exceptions
+import functools
 import logging
 from time import sleep
 from typing import Any, Callable
-import functools
+
+import botocore.exceptions
 
 LOG = logging.getLogger(__name__)
 
@@ -76,8 +77,8 @@ def retry_with_predicate(max_attempts=3, delay=1, backoff=2, predicate=None):
                         raise
 
                     # Log the retry attempt
-                    logging.warning(
-                        f"Retry {attempts}/{max_attempts} for {func.__name__} due to {e.__class__.__name__}: {str(e)}. "
+                    LOG.warning(
+                        f"Retry {attempts}/{max_attempts} for {func.__name__} due to {e.__class__.__name__}: {e!s}. "
                         f"Retrying in {current_delay} seconds..."
                     )
 
@@ -96,9 +97,9 @@ def call_api(*, description: str, fn: Callable[[], Any]) -> Any:
     LOG.info(f"About to call API ({description})")
     try:
         response = fn()
-    except botocore.exceptions.ClientError as e:
+    except botocore.exceptions.ClientError:
         LOG.error(f"API call failed ({description})")
-        LOG.exception(f"The following exception was raised: {e}")
+        LOG.exception("The following exception was raised")
         raise
     else:
         LOG.info(f"API call succeeded ({description})")

@@ -1,8 +1,9 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+from __future__ import annotations
+
 import json
 from contextlib import closing
-from typing import Union
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -65,9 +66,11 @@ def test_http_server_serves_submitter_resources_and_records_calls(mock_server):
 def test_http_server_records_unmatched_requests(mock_server):
     backend, endpoint_url = mock_server
 
-    with pytest.raises(HTTPError) as error:
-        with closing(urlopen(f"{endpoint_url}/not-a-deadline-route")):
-            pass
+    with (
+        pytest.raises(HTTPError) as error,
+        closing(urlopen(f"{endpoint_url}/not-a-deadline-route")),
+    ):
+        pass
 
     assert error.value.code == 404
     assert backend.unmatched_requests == [("GET", "/not-a-deadline-route")]
@@ -75,7 +78,7 @@ def test_http_server_records_unmatched_requests(mock_server):
 
 def test_http_server_returns_validation_errors_for_malformed_requests(mock_server):
     _, endpoint_url = mock_server
-    requests: list[Union[str, Request]] = [
+    requests: list[str | Request] = [
         f"{endpoint_url}/2023-10-12/farms?maxResults=invalid",
         Request(
             f"{endpoint_url}/2023-10-12/farms",

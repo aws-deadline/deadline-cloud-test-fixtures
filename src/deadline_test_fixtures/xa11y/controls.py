@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Callable, Optional, Union
+from typing import Callable, Union
 
 import xa11y
 
@@ -51,7 +51,7 @@ def set_text_field(
     dialog: ControlRoot,
     name: str,
     value: str,
-    nth: Optional[int] = None,
+    nth: int | None = None,
     *,
     timeout: float = WIDGET_TIMEOUT,
 ) -> str:

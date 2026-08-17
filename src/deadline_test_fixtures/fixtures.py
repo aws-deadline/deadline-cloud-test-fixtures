@@ -1,22 +1,25 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 from __future__ import annotations
 
-import botocore
-import botocore.client
-import botocore.loaders
-import boto3
 import glob
 import json
 import logging
 import os
 import pathlib
 import posixpath
-import pytest
 import tempfile
+from collections.abc import Generator
 from contextlib import ExitStack, contextmanager
-from dataclasses import InitVar, dataclass, field, fields, MISSING
-from typing import Any, Generator, Type, TypeVar, Tuple, Optional
+from dataclasses import MISSING, InitVar, dataclass, field, fields
+from typing import Any, TypeVar
 
+import boto3
+import botocore
+import botocore.client
+import botocore.loaders
+import pytest
+
+from .cloudformation import WorkerBootstrapStack
 from .deadline.client import DeadlineClient
 from .deadline.resources import (
     Farm,
@@ -28,23 +31,22 @@ from .deadline.worker import (
     DeadlineWorker,
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
+    EC2InstanceWorker,
     PipInstall,
     PosixInstanceBuildWorker,
     WindowsInstanceBuildWorker,
-    EC2InstanceWorker,
 )
+from .job_attachment_manager import JobAttachmentManager
 from .models import (
     CodeArtifactRepositoryInfo,
     JobAttachmentSettings,
     JobRunAsUser,
-    PosixSessionUser,
-    ServiceModel,
-    S3Object,
     OperatingSystem,
+    PosixSessionUser,
+    S3Object,
+    ServiceModel,
     WindowsSessionUser,
 )
-from .cloudformation import WorkerBootstrapStack
-from .job_attachment_manager import JobAttachmentManager
 from .util import call_api
 
 LOG = logging.getLogger(__name__)
@@ -255,7 +257,7 @@ def bootstrap_resources(request: pytest.FixtureRequest) -> BootstrapResources:
                 kwargs[f.name] = os.environ[env_var]
 
         required_fields = [f for f in all_fields if (MISSING == f.default == f.default_factory)]
-        assert all([rf.name in kwargs for rf in required_fields]), (
+        assert all(rf.name in kwargs for rf in required_fields), (
             "Not all bootstrap resources have been fulfilled via environment variables. Expected "
             + f"values for {[f.name.upper() for f in required_fields]}, but got \n{json.dumps(kwargs, sort_keys=True, indent=4)}"
         )
@@ -403,7 +405,7 @@ def deadline_resources(
 
 def _get_resolved_dest_paths(
     env_var_name: str, operating_system: OperatingSystem
-) -> Optional[Tuple[str, str]]:
+) -> tuple[str, str] | None:
     whl_path = os.getenv(env_var_name)
 
     if not whl_path:
@@ -531,7 +533,7 @@ def worker_config(
 
 
 @pytest.fixture(scope="session")
-def ec2_worker_type(request: pytest.FixtureRequest) -> Generator[Type[DeadlineWorker], None, None]:
+def ec2_worker_type(request: pytest.FixtureRequest) -> Generator[type[DeadlineWorker], None, None]:
     # Allows overriding the base EC2InstanceWorker type with another derived type.
     operating_system = request.getfixturevalue("operating_system")
 
@@ -549,7 +551,7 @@ def ec2_worker_type(request: pytest.FixtureRequest) -> Generator[Type[DeadlineWo
 def worker(
     request: pytest.FixtureRequest,
     worker_config: DeadlineWorkerConfiguration,
-    ec2_worker_type: Type[EC2InstanceWorker],
+    ec2_worker_type: type[EC2InstanceWorker],
 ) -> Generator[DeadlineWorker, None, None]:
     """
     Gets a DeadlineWorker for use in tests.
@@ -612,15 +614,17 @@ def worker(
         )
 
     def stop_worker():
-        if request.session.testsfailed > 0:
-            if os.getenv("KEEP_WORKER_AFTER_FAILURE", "false").lower() == "true":
-                LOG.info("KEEP_WORKER_AFTER_FAILURE is set, not stopping worker")
-                return
+        if (
+            request.session.testsfailed > 0
+            and os.getenv("KEEP_WORKER_AFTER_FAILURE", "false").lower() == "true"
+        ):
+            LOG.info("KEEP_WORKER_AFTER_FAILURE is set, not stopping worker")
+            return
 
         try:
             worker.stop()
-        except Exception as e:
-            LOG.exception(f"Error while stopping worker: {e}")
+        except Exception:
+            LOG.exception("Error while stopping worker")
             LOG.error(
                 "Failed to stop worker. Resources may be left over that need to be cleaned up manually."
             )
@@ -628,8 +632,8 @@ def worker(
 
     try:
         worker.start()
-    except Exception as e:
-        LOG.exception(f"Failed to start worker: {e}")
+    except Exception:
+        LOG.exception("Failed to start worker")
         LOG.info("Stopping worker because it failed to start")
         stop_worker()
         raise

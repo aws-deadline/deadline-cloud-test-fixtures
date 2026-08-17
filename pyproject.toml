@@ -115,8 +115,41 @@ ignore_missing_imports = true
 line-length = 100
 
 [tool.ruff.lint]
+# Rules below are ruff >= 0.16 defaults that this package deliberately does not
+# follow. Each entry states why; prefer a targeted `noqa` over adding to this list.
 ignore = [
   "E501",
+  # Deliberate, across 9 sites: every blind `except Exception` here is a best-effort
+  # boundary in a *test fixture*. EC2/accessibility diagnostics, the observability
+  # callback in the mock backend, and stale-resource cleanup must never mask the real
+  # test failure or break request handling. `except Exception: pytest.fail(...)` is
+  # also the canonical pytest idiom. (S110, the `try`-`except`-`pass` half of this
+  # pattern, is only 2 sites and carries a `noqa` at each instead.)
+  "BLE001",
+  # The `# fmt: off` / `# fmt: on` region around the Posix worker bootstrap command
+  # list is load-bearing: this package formats with black, which honours those
+  # regions (verified: removing them reformats the embedded `echo "TIMING: ..."`
+  # literals). RUF028 only describes what `ruff format` can honour, so it does not
+  # apply to this toolchain.
+  "RUF028",
+  # `" ; ".join([...])` / `" && ".join([...])` is how the worker bootstrap composes
+  # shell commands, one statement per line. FLY002 collapses those into single
+  # 250-400 character literals, which is materially harder to read and diff.
+  "FLY002",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# hatchling loads this build hook as a standalone module that is never registered
+# in sys.modules. PEP 563 string annotations would then make dataclasses fall back
+# to `sys.modules.get(cls.__module__).__dict__` when scanning for ClassVar/KW_ONLY,
+# which is None there and crashes the build on Python 3.14. Keep real annotation
+# objects in this file, which means keeping typing.Optional.
+"hatch_version_hook.py" = ["FA100"]
+
+[tool.ruff.lint.flake8-bugbear]
+# BundleNormalization is a frozen dataclass, so calling it in a default is safe.
+extend-immutable-calls = [
+  "deadline_test_fixtures.job_bundle.compare.BundleNormalization",
 ]
 
 [tool.ruff.lint.isort]
