@@ -1,3 +1,7 @@
+## 0.18.20 (2026-08-26)
+
+### Bug Fixes
+* Fixed GUI test fixtures to use the new "Save bundle as" button instead of the renamed "Export Bundle" button. (#322)
 ## 0.18.19 (2026-08-18)
 ## 0.18.18 (2026-07-28)
 
