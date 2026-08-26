@@ -119,8 +119,10 @@ def find_complete_job_bundle(
     *,
     files: Sequence[str] = DEFAULT_BUNDLE_FILES,
 ) -> Path | None:
-    """Return the newest complete ``history/YYYY-mm/bundle`` directory."""
-    candidates = [path for path in history_dir.glob("*/*") if path.is_dir()]
+    """Return the newest complete bundle from a local or job-history directory."""
+    candidates = [
+        path for pattern in ("*", "*/*") for path in history_dir.glob(pattern) if path.is_dir()
+    ]
     candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     required = set(files)
     for candidate in candidates:

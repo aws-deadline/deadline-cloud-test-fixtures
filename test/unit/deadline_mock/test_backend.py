@@ -51,11 +51,17 @@ def test_http_server_serves_submitter_resources_and_records_calls(mock_server):
         farmId=backend.farm_id,
         queueId=backend.queue_id,
     )
+    queue_role = client.assume_queue_role_for_user(
+        farmId=backend.farm_id,
+        queueId=backend.queue_id,
+    )
 
     assert farms["farms"][0]["farmId"] == backend.farm_id
     assert queues["queues"][0]["queueId"] == backend.queue_id
     assert environments["environments"] == []
+    assert queue_role["credentials"]["accessKeyId"] == "testing"
     assert backend.call_counts == {
+        "AssumeQueueRoleForUser": 1,
         "ListFarms": 1,
         "ListQueues": 1,
         "ListQueueEnvironments": 1,

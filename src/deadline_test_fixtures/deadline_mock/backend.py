@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, ClassVar
 from urllib.parse import parse_qs, urlparse
@@ -164,6 +164,22 @@ class MockDeadlineBackend:
     def get_queue(self, *, farmId: str, queueId: str) -> dict[str, Any]:
         key = self._queue_key(farmId, queueId, "GetQueue")
         return dict(self.queues[key])
+
+    @route(
+        "GET",
+        "/farms/{farmId}/queues/{queueId}/user-roles",
+        "AssumeQueueRoleForUser",
+    )
+    def assume_queue_role_for_user(self, *, farmId: str, queueId: str) -> dict[str, Any]:
+        self._queue_key(farmId, queueId, "AssumeQueueRoleForUser")
+        return {
+            "credentials": {
+                "accessKeyId": "testing",
+                "secretAccessKey": "testing",
+                "sessionToken": "testing",
+                "expiration": datetime.now(timezone.utc) + timedelta(hours=1),
+            }
+        }
 
     @route(
         "GET",
