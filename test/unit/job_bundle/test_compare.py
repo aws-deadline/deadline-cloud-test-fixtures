@@ -92,10 +92,11 @@ def test_bundle_comparison_only_ignores_explicit_template_keys(tmp_path):
     )
 
 
-def test_find_complete_bundle(tmp_path):
-    history_bundle = tmp_path / "history" / "2026-07" / "bundle"
-    _write_bundle(history_bundle)
-    assert find_complete_job_bundle(tmp_path / "history") == history_bundle
+@pytest.mark.parametrize("relative_path", ("bundle", "2026-07/bundle"))
+def test_find_complete_bundle(tmp_path, relative_path):
+    bundle = tmp_path / "root" / relative_path
+    _write_bundle(bundle)
+    assert find_complete_job_bundle(tmp_path / "root") == bundle
 
 
 def test_job_bundle_case_prepares_actual_directory(tmp_path):

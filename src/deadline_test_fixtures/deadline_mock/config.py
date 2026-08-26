@@ -19,10 +19,16 @@ def write_deadline_config(
     farm_id: str,
     queue_id: str,
     job_history_dir: Path,
+    job_bundle_default_directory: Path | None = None,
     profile_name: str = "(default)",
 ) -> None:
     """Write a minimal config selecting mock resources and a temporary history."""
     config_path.parent.mkdir(parents=True, exist_ok=True)
+    bundle_directory_setting = (
+        f"job_bundle_default_directory = {job_bundle_default_directory}\n"
+        if job_bundle_default_directory is not None
+        else ""
+    )
     config_path.write_text(
         f"[profile-{profile_name} defaults]\n"
         f"farm_id = {farm_id}\n"
@@ -32,6 +38,7 @@ def write_deadline_config(
         "\n"
         f"[profile-{profile_name} settings]\n"
         f"job_history_dir = {job_history_dir}\n"
+        f"{bundle_directory_setting}"
         "\n"
         "[settings]\n"
         "submitter_update_notification = false\n"

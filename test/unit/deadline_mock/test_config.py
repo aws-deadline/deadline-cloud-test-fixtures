@@ -9,18 +9,21 @@ from deadline_test_fixtures.deadline_mock import (
 def test_write_deadline_config_selects_mock_resources(tmp_path):
     config_path = tmp_path / "deadline.config"
     history = tmp_path / "history"
+    bundle_directory = tmp_path / "bundles"
 
     write_deadline_config(
         config_path,
         farm_id="farm-test",
         queue_id="queue-test",
         job_history_dir=history,
+        job_bundle_default_directory=bundle_directory,
     )
 
     content = config_path.read_text(encoding="utf-8")
     assert "farm_id = farm-test" in content
     assert "queue_id = queue-test" in content
     assert f"job_history_dir = {history}" in content
+    assert f"job_bundle_default_directory = {bundle_directory}" in content
     assert "submitter_update_notification = false" in content
     assert "opt_out = true" in content
 
