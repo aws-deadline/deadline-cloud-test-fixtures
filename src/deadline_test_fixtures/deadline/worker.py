@@ -11,6 +11,7 @@ import posixpath
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import InitVar, dataclass, field, replace
@@ -1275,6 +1276,362 @@ touch "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}"
             f"/aws/service/ami-amazon-linux-latest/{PosixInstanceBuildWorker.AL2023_AMI_NAME}"
         )
         return ami_ssm_param
+
+
+@dataclass
+class LocalMacWorker(DeadlineWorker):
+    """A Deadline worker running on the macOS host executing the tests.
+
+    Installs and configures the worker agent on the current host rather than
+    provisioning a machine, so a single host serves every worker fixture scope.
+    Tests that need workers configured differently must run in separate hosts.
+
+    Requirements on the host:
+
+    * macOS, asserted on start.
+    * Passwordless `sudo`: creating accounts, writing to `/etc/sudoers.d`, and
+      bootstrapping a LaunchDaemon all need root.
+    * Worker agent 0.31.1 or later, which is when `install-deadline-worker`
+      gained macOS support.
+    * AWS credentials resolvable by boto3 in the test process.
+
+    Mutates host state it does not restore: accounts, groups, a file in
+    `/etc/sudoers.d`, and directories under `/var/lib` and `/etc/amazon`. Use
+    only on a disposable host.
+    """
+
+    configuration: DeadlineWorkerConfiguration
+
+    deadline_client: botocore.client.BaseClient | None = None
+    """Used to delete the worker on stop. Skipped when not supplied."""
+
+    venv_path: str = "/opt/deadline/worker"
+    """Directory for the worker agent's virtual environment."""
+
+    worker_id: str | None = field(init=False, default=None)
+
+    LAUNCHD_LABEL: ClassVar[str] = "com.amazon.deadline.worker-agent"
+    LAUNCHD_PLIST: ClassVar[str] = f"/Library/LaunchDaemons/{LAUNCHD_LABEL}.plist"
+
+    _started: bool = field(init=False, default=False)
+
+    def start(self) -> None:
+        assert (
+            sys.platform == "darwin"
+        ), f"LocalMacWorker requires macOS, but sys.platform is {sys.platform!r}"
+
+        self._install_agent()
+        self._create_job_users()
+        self._run_installer()
+        self._write_impersonation_sudoers_rule()
+        self._write_agent_credentials()
+        self._started = True
+
+        if self.configuration.start_service:
+            self.start_worker_service()
+
+    def stop(self) -> None:
+        if self._started:
+            try:
+                self.stop_worker_service()
+            except Exception:  # pragma: no cover
+                LOG.exception("Failed to stop the worker agent service; continuing cleanup")
+
+        if not self.worker_id:
+            LOG.info("No worker_id available, skipping worker cleanup")
+            return
+
+        # Worker records in a terminal state still count against the fleet's
+        # maxWorkerCount, so undeleted workers accumulate until CreateWorker
+        # fails with a ConflictException.
+        if self.deadline_client is None:
+            LOG.warning(
+                f"No deadline_client supplied; {self.worker_id} will be left in the fleet. "
+                "Pass deadline_client to have it deleted."
+            )
+            return
+
+        try:
+            self.deadline_client.delete_worker(
+                farmId=self.configuration.farm_id,
+                fleetId=self.configuration.fleet.id,
+                workerId=self.worker_id,
+            )
+            LOG.info(f"{self.worker_id} has been deleted from {self.configuration.fleet.id}")
+        except botocore.exceptions.ClientError:
+            LOG.exception("Failed to delete worker")
+            raise
+
+    def send_command(self, command: str, *, quiet: bool = False) -> CommandResult:
+        """Run a command on this host as root, via `sudo`.
+
+        Matches the EC2 workers' contract -- root, with `pipefail` set -- so
+        callers need not know which worker implementation they hold.
+        """
+        if not quiet:  # pragma: no cover
+            LOG.info(f"Running command on the local macOS host: {command}")
+
+        try:
+            result = subprocess.run(
+                args=["sudo", "/bin/bash", "-euo", "pipefail", "-c", command],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+            )
+        except Exception as e:
+            if not quiet:  # pragma: no cover
+                LOG.exception("Failed to run command")
+                _handle_subprocess_error(e)
+            raise
+        else:
+            return CommandResult(
+                exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr
+            )
+
+    def _install_agent(self) -> None:
+        LOG.info(f"Installing the worker agent into {self.venv_path}")
+        self.send_command(
+            " && ".join(
+                [
+                    f"mkdir -p {self.venv_path}",
+                    # The system Python, not the test process's interpreter: the
+                    # agent daemon outlives this process and must not depend on
+                    # an interpreter that goes away with it.
+                    f"/usr/bin/python3 -m venv {self.venv_path}",
+                    # install_command_for_linux invokes bare `pip`, so the venv
+                    # must be active for it to install there.
+                    f"source {self.venv_path}/bin/activate",
+                    self.configuration.worker_agent_install.install_command_for_linux,
+                ]
+            )
+        )
+
+    def _create_job_users(self) -> None:
+        """Create each jobRunAsUser and put it in the shared job group.
+
+        The installer creates the agent user and the shared job group but never
+        the job users. Membership in the shared group is required: the macOS
+        session root is nested under `/var/lib/deadline`, which is mode 0750 and
+        owned by that group, so a job user outside it gets EACCES on its own
+        session directory.
+        """
+        for job_user in self.configuration.job_users:
+            LOG.info(f"Creating job user {job_user.user}")
+            self.send_command(
+                " && ".join(
+                    [
+                        f"dseditgroup -o create {job_user.group} 2>/dev/null || true",
+                        # The password is random and unused: jobs reach this user
+                        # via `sudo -u`, never an interactive login. A real home
+                        # directory and valid shell are still required, because
+                        # the agent starts a login shell.
+                        (
+                            f"id -u {job_user.user} >/dev/null 2>&1 || "
+                            f"sysadminctl -addUser {job_user.user} -fullName {job_user.user} "
+                            f"-password $(uuidgen) -shell /bin/zsh"
+                        ),
+                        f"createhomedir -c -u {job_user.user} >/dev/null",
+                        # Keep service accounts out of the login window.
+                        f"dscl . -create /Users/{job_user.user} IsHidden 1",
+                        f"dseditgroup -o edit -a {job_user.user} -t user {job_user.group}",
+                        (
+                            f"dseditgroup -o edit -a {job_user.user} -t user "
+                            f"{self.configuration.job_user_group}"
+                        ),
+                    ]
+                )
+            )
+
+    def _run_installer(self) -> None:
+        config = self.configuration
+        LOG.info(f"Running install-deadline-worker for fleet {config.fleet.id}")
+
+        installer_cmd = (
+            f"{self.venv_path}/bin/install-deadline-worker "
+            + "-y "
+            + f"--farm-id {config.farm_id} "
+            + f"--fleet-id {config.fleet.id} "
+            + f"--region {config.region} "
+            + f"--user {config.agent_user} "
+            + f"--group {config.job_user_group} "
+            + f"{'--allow-shutdown ' if config.allow_shutdown else ''}"
+            + f"{'--no-install-service ' if config.no_install_service else ''}"
+            + f"{'--disallow-instance-profile ' if config.disallow_instance_profile else ''}"
+            + (
+                f"--session-root-dir {config.session_root_dir} "
+                if config.session_root_dir is not None
+                else ""
+            )
+        )
+
+        cmds = [*(config.pre_install_commands or []), installer_cmd]
+
+        if config.session_runtime:
+            _validate_session_runtime(config.session_runtime)
+            # The installer writes this setting commented out, so uncomment and
+            # set it. BSD sed requires an argument to -i, unlike GNU sed. sed
+            # exits 0 when nothing matched, so the grep below is what catches a
+            # worker left on the default runtime.
+            cmds.append(
+                f"sed -i '' 's/^# session_runtime = .*/session_runtime = "
+                f'"{config.session_runtime}"/\' /etc/amazon/deadline/worker.toml'
+            )
+            cmds.append(
+                f"grep -q '^session_runtime = \"{config.session_runtime}\"' "
+                "/etc/amazon/deadline/worker.toml"
+            )
+
+        self.send_command(" && ".join(cmds))
+
+    def _write_impersonation_sudoers_rule(self) -> None:
+        """Allow the agent user to run jobs as each job user.
+
+        The installer does not create this rule. `--allow-shutdown` is a
+        different rule, granting only the ability to shut the host down.
+        """
+        rule_users = ",".join(
+            [
+                self.configuration.agent_user,
+                *[job_user.user for job_user in self.configuration.job_users],
+            ]
+        )
+        rule_path = f"/etc/sudoers.d/{self.configuration.agent_user}-impersonation"
+        LOG.info(f"Writing impersonation sudoers rule to {rule_path}")
+
+        # Validate with visudo before moving it into place: a malformed file in
+        # /etc/sudoers.d breaks sudo for every user on the host.
+        self.send_command(
+            " && ".join(
+                [
+                    "TMP=$(mktemp)",
+                    f"echo '{self.configuration.agent_user} ALL=({rule_users}) NOPASSWD: ALL' > $TMP",
+                    "visudo -cf $TMP",
+                    "chown root:wheel $TMP",
+                    "chmod 440 $TMP",
+                    f"mv $TMP {rule_path}",
+                ]
+            )
+        )
+
+    def _write_agent_credentials(self) -> None:
+        """Give the agent user AWS credentials.
+
+        The LaunchDaemon runs as the agent user, so it inherits neither the test
+        process's environment nor its credentials file.
+
+        The agent re-reads this file on every credential refresh, not only at
+        CreateWorker, so the worker stops working once these credentials expire.
+        Callers must supply credentials that outlive the run.
+        """
+        import boto3  # only this worker type needs boto3
+
+        credentials = boto3.Session().get_credentials()
+        assert credentials is not None, (
+            "No AWS credentials resolvable in the test process, so the worker agent "
+            "would have none either."
+        )
+        frozen = credentials.get_frozen_credentials()
+
+        agent_home = f"/var/lib/{self.configuration.agent_user}"
+        lines = [
+            "[default]",
+            f"aws_access_key_id = {frozen.access_key}",
+            f"aws_secret_access_key = {frozen.secret_key}",
+        ]
+        if frozen.token:
+            lines.append(f"aws_session_token = {frozen.token}")
+        lines.append(f"region = {self.configuration.region}")
+
+        LOG.info(f"Writing AWS credentials for {self.configuration.agent_user}")
+        # Passed on stdin, not interpolated into the command, to keep the secret
+        # out of command logs.
+        creds_dir = f"{agent_home}/.aws"
+        subprocess.run(
+            args=[
+                "sudo",
+                "/bin/bash",
+                "-euo",
+                "pipefail",
+                "-c",
+                (
+                    f"install -d -o {self.configuration.agent_user} -m 700 {creds_dir} && "
+                    f"cat > {creds_dir}/credentials && "
+                    f"chown {self.configuration.agent_user} {creds_dir}/credentials && "
+                    f"chmod 600 {creds_dir}/credentials"
+                ),
+            ],
+            input="\n".join(lines) + "\n",
+            check=True,
+            text=True,
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+
+    def start_worker_service(self) -> None:
+        LOG.info("Bootstrapping the worker agent LaunchDaemon")
+        result = self.send_command(
+            " && ".join(
+                [
+                    f"launchctl bootstrap system {self.LAUNCHD_PLIST}",
+                    "sleep 5",
+                    # launchctl reports a pid even for a process that exited
+                    # immediately, so `state = running` is the check that means
+                    # the daemon is actually up.
+                    (
+                        f"launchctl print system/{self.LAUNCHD_LABEL} | grep -q 'state = running' "
+                        "|| (echo '+++AGENT NOT RUNNING+++'; "
+                        "tail -200 /var/log/amazon/deadline/worker-agent-bootstrap.log "
+                        "/var/log/amazon/deadline/worker-agent.log 2>&1; exit 1)"
+                    ),
+                ]
+            )
+        )
+        assert result.exit_code == 0, f"Failed to start the worker agent service: {result}"
+
+        self.worker_id = self.get_worker_id()
+
+    def stop_worker_service(self) -> None:
+        LOG.info("Booting out the worker agent LaunchDaemon")
+        result = self.send_command(f"launchctl bootout system/{self.LAUNCHD_LABEL}")
+        assert result.exit_code == 0, f"Failed to stop the worker agent service: {result}"
+
+    def get_worker_id(self) -> str:
+        cmd_result: CommandResult | None = None
+
+        def got_worker_id() -> bool:
+            nonlocal cmd_result
+            try:
+                cmd_result = self.send_command(
+                    "python3 -c \"import json;print(json.load(open('/var/lib/deadline/worker.json'))['worker_id'])\"",
+                    quiet=True,
+                )
+            except subprocess.CalledProcessError as e:
+                LOG.warning(f"Worker ID retrieval failed: {e}")
+                return False
+            else:
+                return cmd_result.exit_code == 0
+
+        # The agent writes worker.json shortly after CreateWorker succeeds, so
+        # the file may not exist for the first few seconds after bootstrap.
+        wait_for(
+            description="retrieval of worker ID from /var/lib/deadline/worker.json",
+            predicate=got_worker_id,
+            interval_s=10,
+            max_retries=6,
+        )
+
+        assert isinstance(cmd_result, CommandResult)
+        cmd_result = cast(CommandResult, cmd_result)
+        assert cmd_result.exit_code == 0, f"Failed to get Worker ID: {cmd_result}"
+
+        worker_id = cmd_result.stdout.rstrip("\r\n")
+        assert re.match(
+            r"^worker-[0-9a-f]{32}$", worker_id
+        ), f"Got nonvalid Worker ID from command stdout: {cmd_result}"
+        return worker_id
 
 
 @dataclass

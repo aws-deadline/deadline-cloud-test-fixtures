@@ -47,10 +47,13 @@ class JobRunAsUser:
 
 @dataclass(frozen=True)
 class OperatingSystem:
-    name: Literal["AL2023", "WIN2022"]
+    name: Literal["AL2023", "WIN2022", "MACOS"]
 
     def is_amazon_linux(self) -> bool:
         return self.name.startswith("AL")
+
+    def is_macos(self) -> bool:
+        return self.name == "MACOS"
 
     def is_windows(self) -> bool:
         return self.name.startswith("WIN")
