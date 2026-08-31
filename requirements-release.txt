@@ -1,4 +1,1 @@
 python-semantic-release == 10.6.*
-# python-semantic-release 10.6.1 references git.Actor.name_email_regex, which
-# GitPython removed in 3.1.60. Pin below that until psr drops the reference.
-gitpython < 3.1.60
