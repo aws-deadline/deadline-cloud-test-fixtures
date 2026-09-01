@@ -1,3 +1,7 @@
+## 0.18.21 (2026-09-01)
+
+### Features
+* Added `LocalMacWorker` for running macOS Deadline workers directly on the test host instead of provisioning a separate machine. This also adds a `MACOS` variant to `OperatingSystem`, enabling macOS-based test workflows. (#329)
 ## 0.18.20 (2026-08-26)
 
 ### Bug Fixes
