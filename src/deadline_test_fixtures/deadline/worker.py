@@ -9,6 +9,7 @@ import os
 import pathlib
 import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -1321,11 +1322,18 @@ class LocalMacWorker(DeadlineWorker):
     )
 
     _started: bool = field(init=False, default=False)
+    _agent_home: str | None = field(init=False, default=None)
 
     def start(self) -> None:
         assert (
             sys.platform == "darwin"
         ), f"LocalMacWorker requires macOS, but sys.platform is {sys.platform!r}"
+        # This worker configures and supervises the agent through its LaunchDaemon,
+        # which --no-install-service tells the installer not to write. Reject it
+        # here rather than failing later on a missing plist.
+        assert (
+            not self.configuration.no_install_service
+        ), "LocalMacWorker does not support no_install_service: it manages the agent's LaunchDaemon."
 
         self._stage_file_mappings()
         self._install_agent()
@@ -1340,25 +1348,28 @@ class LocalMacWorker(DeadlineWorker):
             self.start_worker_service()
 
     def stop(self) -> None:
+        # Read the worker id before booting the daemon out. worker_id is unset when
+        # start_service was false, and also when start_worker_service raised after
+        # the agent had already registered; either way the record leaks if it is not
+        # deleted. One attempt, unlike get_worker_id, since by teardown the file
+        # either exists or never will and waiting would only stall cleanup.
+        if not self.worker_id:
+            result = self.send_command(self._READ_WORKER_ID_CMD, quiet=True)
+            candidate = result.stdout.strip()
+            if result.exit_code == 0 and re.match(r"^worker-[0-9a-f]{32}$", candidate):
+                self.worker_id = candidate
+
         if self._started:
             try:
                 self.stop_worker_service()
             except Exception:  # pragma: no cover
                 LOG.exception("Failed to stop the worker agent service; continuing cleanup")
 
+        self._remove_impersonation_sudoers_rule()
+
         if not self.worker_id:
-            # worker_id is only set by start_worker_service, so it is unset when
-            # start_service was false. The agent may still have registered, and an
-            # undeleted worker leaks, so read the id back from disk. A single
-            # attempt, unlike get_worker_id: by teardown the file either exists or
-            # never will, and waiting would just stall cleanup.
-            result = self.send_command(self._READ_WORKER_ID_CMD, quiet=True)
-            candidate = result.stdout.strip()
-            if result.exit_code == 0 and re.match(r"^worker-[0-9a-f]{32}$", candidate):
-                self.worker_id = candidate
-            else:
-                LOG.info("No worker_id available, skipping worker cleanup")
-                return
+            LOG.info("No worker_id available, skipping worker cleanup")
+            return
 
         # Worker records in a terminal state still count against the fleet's
         # maxWorkerCount, so undeleted workers accumulate until CreateWorker
@@ -1419,6 +1430,26 @@ class LocalMacWorker(DeadlineWorker):
         assert result.exit_code == 0, f"{description} failed: {result}"
         return result
 
+    def _run_with_input(self, description: str, command: str, stdin: str) -> None:
+        """Run a root command, feeding `stdin` to it.
+
+        Used where a value must not appear in a command line, either because it is
+        a secret or because quoting it correctly is error-prone.
+        """
+        LOG.info(description)
+        result = subprocess.run(
+            args=["sudo", "/bin/bash", "-euo", "pipefail", "-c", command],
+            input=stdin,
+            check=False,
+            text=True,
+            encoding="utf-8",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        assert (
+            result.returncode == 0
+        ), f"{description} failed: exit {result.returncode}\n{result.stdout}"
+
     def _stage_file_mappings(self) -> None:
         """Copy `file_mappings` sources to their destination paths.
 
@@ -1445,9 +1476,20 @@ class LocalMacWorker(DeadlineWorker):
         daemon is bootstrapped.
         """
         config = self.configuration
+        agent_home = self._agent_home
+        assert agent_home, "_write_agent_credentials must resolve the agent home first"
+
         env: dict[str, str] = {
             "AWS_REGION": config.region,
             "AWS_DEFAULT_REGION": config.region,
+            # launchd does not reliably export HOME for a daemon running as a named
+            # user, and botocore resolves both the credentials file and the service
+            # model directory through expanduser, which prefers HOME. Set it, and
+            # set both paths explicitly, so neither lookup depends on what launchd
+            # happens to provide.
+            "HOME": agent_home,
+            "AWS_SHARED_CREDENTIALS_FILE": f"{agent_home}/.aws/credentials",
+            "AWS_DATA_PATH": f"{agent_home}/.aws/models",
         }
 
         # Without these the daemon inherits neither, so a run pointed at a
@@ -1510,8 +1552,12 @@ class LocalMacWorker(DeadlineWorker):
                 f"Creating job user {job_user.user}",
                 " && ".join(
                     [
+                        # `-o read` is the existence check. `-o checkmember` without
+                        # `-m` asks whether the *invoking* user belongs to the
+                        # group, which is a different question and false for root
+                        # on a group it does not belong to.
                         (
-                            f"dseditgroup -o checkmember {job_user.group} >/dev/null 2>&1 "
+                            f"dseditgroup -o read {job_user.group} >/dev/null 2>&1 "
                             f"|| dseditgroup -o create {job_user.group}"
                         ),
                         # The password is random and unused: jobs reach this user
@@ -1612,6 +1658,13 @@ class LocalMacWorker(DeadlineWorker):
             ),
         )
 
+    def _remove_impersonation_sudoers_rule(self) -> None:
+        """Remove the impersonation rule so the grant does not outlive the worker."""
+        rule_path = f"/etc/sudoers.d/{self.configuration.agent_user}-impersonation"
+        result = self.send_command(f"rm -f {rule_path}", quiet=True)
+        if result.exit_code != 0:  # pragma: no cover
+            LOG.warning(f"Failed to remove {rule_path}: {result}")
+
     def _write_agent_credentials(self) -> None:
         """Give the agent user AWS credentials.
 
@@ -1657,63 +1710,47 @@ class LocalMacWorker(DeadlineWorker):
             lines.append(f"aws_session_token = {frozen.token}")
         lines.append(f"region = {self.configuration.region}")
 
-        LOG.info(f"Writing AWS credentials to {creds_path}")
         # Passed on stdin, not interpolated into the command, to keep the secret
         # out of command logs.
-        result = subprocess.run(
-            args=[
-                "sudo",
-                "/bin/bash",
-                "-euo",
-                "pipefail",
-                "-c",
-                (
-                    f"install -d -o {agent_user} -m 700 {agent_home}/.aws && "
-                    f"cat > {creds_path} && "
-                    f"chown {agent_user} {creds_path} && "
-                    f"chmod 600 {creds_path}"
-                ),
-            ],
-            input="\n".join(lines) + "\n",
-            check=False,
-            text=True,
-            encoding="utf-8",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+        self._run_with_input(
+            f"Writing AWS credentials to {creds_path}",
+            (
+                f"install -d -o {agent_user} -m 700 {agent_home}/.aws && "
+                f"cat > {creds_path} && "
+                f"chown {agent_user} {creds_path} && "
+                f"chmod 600 {creds_path}"
+            ),
+            "\n".join(lines) + "\n",
         )
-        assert (
-            result.returncode == 0
-        ), f"Writing agent credentials failed: exit {result.returncode}\n{result.stdout}"
 
-        # Point the daemon at the file explicitly. boto3 resolves ~/.aws/credentials
-        # through expanduser, which prefers $HOME, and launchd does not reliably
-        # export HOME for a system daemon -- so relying on it can leave the agent
-        # reading a path that was never written.
-        self._set_plist_env({"AWS_SHARED_CREDENTIALS_FILE": creds_path})
+        # Consumed by _configure_agent_environment, which writes the plist
+        # environment in one pass.
+        self._agent_home = agent_home
 
     def _set_plist_env(self, env: dict[str, str]) -> None:
-        """Set EnvironmentVariables entries on the agent's LaunchDaemon plist.
+        """Merge entries into EnvironmentVariables on the agent's LaunchDaemon plist.
 
         macOS has no systemd drop-in equivalent, so daemon environment goes in the
-        plist the installer wrote. Must be called before the daemon is
-        bootstrapped for the values to take effect.
+        plist the installer wrote. Must be called before the daemon is bootstrapped
+        for the values to take effect.
+
+        Edited with plistlib rather than PlistBuddy: PlistBuddy takes the key and
+        value as whitespace-separated tokens inside its -c argument, so a value
+        containing a space or a quote is mis-parsed or breaks out of the quoting.
+        The JSON arrives on stdin, so no value is ever interpolated into a command.
         """
-        cmds = [
-            (
-                f"/usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables dict' "
-                f"{self.LAUNCHD_PLIST} 2>/dev/null || true"
-            )
-        ]
-        for key, value in env.items():
-            # Add fails when the key exists and Set fails when it does not, so try
-            # both to keep this rerunnable.
-            cmds.append(
-                f"/usr/libexec/PlistBuddy -c 'Add :EnvironmentVariables:{key} string {value}' "
-                f"{self.LAUNCHD_PLIST} 2>/dev/null || "
-                f"/usr/libexec/PlistBuddy -c 'Set :EnvironmentVariables:{key} {value}' "
-                f"{self.LAUNCHD_PLIST}"
-            )
-        self._run("Setting LaunchDaemon environment", " && ".join(cmds))
+        script = (
+            "import json,plistlib,sys;"
+            "path=sys.argv[1];"
+            "data=plistlib.load(open(path,'rb'));"
+            "data.setdefault('EnvironmentVariables',{}).update(json.load(sys.stdin));"
+            "plistlib.dump(data,open(path,'wb'))"
+        )
+        self._run_with_input(
+            f"Setting LaunchDaemon environment: {sorted(env)}",
+            f"/usr/bin/python3 -c {shlex.quote(script)} {self.LAUNCHD_PLIST}",
+            json.dumps(env),
+        )
 
     def start_worker_service(self) -> None:
         LOG.info("Bootstrapping the worker agent LaunchDaemon")
@@ -1741,7 +1778,15 @@ class LocalMacWorker(DeadlineWorker):
     def stop_worker_service(self) -> None:
         LOG.info("Booting out the worker agent LaunchDaemon")
         result = self.send_command(f"launchctl bootout system/{self.LAUNCHD_LABEL}")
-        assert result.exit_code == 0, f"Failed to stop the worker agent service: {result}"
+        if result.exit_code == 0:
+            return
+        # bootout fails when the daemon was never bootstrapped, which is the normal
+        # case for start_service=False or a start() that raised early. Treat that as
+        # success so teardown does not log an exception for an expected state.
+        if re.search(r"[Nn]o such process|[Cc]ould not find", result.stdout):
+            LOG.info("Worker agent service was not loaded; nothing to boot out")
+            return
+        raise AssertionError(f"Failed to stop the worker agent service: {result}")
 
     def get_worker_id(self) -> str:
         cmd_result: CommandResult | None = None
