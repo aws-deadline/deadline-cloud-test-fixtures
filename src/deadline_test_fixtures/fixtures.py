@@ -418,7 +418,7 @@ def _get_resolved_dest_paths(
     ), f"Expected exactly one {env_var_name} whl path, but got {resolved_whl_paths} (from pattern {whl_path})"
     resolved_whl_path = resolved_whl_paths[0]
 
-    if operating_system.is_amazon_linux():
+    if operating_system.is_amazon_linux() or operating_system.is_macos():
         dest_path = posixpath.join("/tmp", os.path.basename(resolved_whl_path))
     elif operating_system.is_windows():
         dest_path = posixpath.join(
@@ -507,7 +507,7 @@ def worker_config(
         with src_path.open(mode="w") as f:
             json.dump(service_model.model, f)
 
-        if operating_system.is_amazon_linux():
+        if operating_system.is_amazon_linux() or operating_system.is_macos():
             dst_path = posixpath.join("/tmp", src_path.name)
         elif operating_system.is_windows():
             dst_path = posixpath.join(
@@ -687,5 +687,7 @@ def _find_latest_service_model_file(service_name: str) -> str:
 def operating_system(request) -> OperatingSystem:
     if request.param == "linux":
         return OperatingSystem(name="AL2023")
+    elif request.param == "macos":
+        return OperatingSystem(name="MACOS")
     else:
         return OperatingSystem(name="WIN2022")
