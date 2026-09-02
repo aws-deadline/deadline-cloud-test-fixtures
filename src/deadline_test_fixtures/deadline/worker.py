@@ -1337,8 +1337,11 @@ class LocalMacWorker(DeadlineWorker):
 
         self._stage_file_mappings()
         self._install_agent()
-        self._create_job_users()
+        # After the installer, which creates the shared job group that _create_job_users
+        # adds each job user to. Creating the users first fails on a host where that group
+        # does not already exist.
         self._run_installer()
+        self._create_job_users()
         self._write_impersonation_sudoers_rule()
         self._write_agent_credentials()
         self._configure_agent_environment()
