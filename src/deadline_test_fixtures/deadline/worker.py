@@ -1548,6 +1548,12 @@ class LocalMacWorker(DeadlineWorker):
         session root is nested under `/var/lib/deadline`, which is mode 0750 and
         owned by that group, so a job user outside it gets EACCES on its own
         session directory.
+
+        The agent user also joins each job user's own group, mirroring the
+        `usermod -a -G` the EC2 workers run. The agent chowns each queue's
+        credentials directory to that group, and changing a file's group requires
+        the caller to belong to the target group, so without this the agent exits
+        with EPERM on the first session it is assigned.
         """
         for job_user in self.configuration.job_users:
             LOG.info(f"Creating job user {job_user.user}")
@@ -1583,6 +1589,10 @@ class LocalMacWorker(DeadlineWorker):
                         (
                             f"dseditgroup -o edit -a {job_user.user} -t user "
                             f"{self.configuration.job_user_group}"
+                        ),
+                        (
+                            f"dseditgroup -o edit -a {self.configuration.agent_user} "
+                            f"-t user {job_user.group}"
                         ),
                     ]
                 ),
