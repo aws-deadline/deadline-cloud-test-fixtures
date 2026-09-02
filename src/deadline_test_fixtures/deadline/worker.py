@@ -1384,6 +1384,12 @@ class LocalMacWorker(DeadlineWorker):
             )
             return
 
+        # DeleteWorker only accepts CREATED, DELETED, STOPPED and NOT_RESPONDING. Booting
+        # out the LaunchDaemon sends SIGTERM, and the agent reports STOPPED as it exits,
+        # but the delete below would otherwise race that final UpdateWorker and be
+        # rejected while the worker is still IDLE.
+        self._wait_until_deletable()
+
         try:
             self.deadline_client.delete_worker(
                 farmId=self.configuration.farm_id,
@@ -1394,6 +1400,47 @@ class LocalMacWorker(DeadlineWorker):
         except botocore.exceptions.ClientError:
             LOG.exception("Failed to delete worker")
             raise
+
+    _DELETABLE_WORKER_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {"CREATED", "DELETED", "STOPPED", "NOT_RESPONDING"}
+    )
+
+    def _wait_until_deletable(
+        self, *, max_checks: int = 12, seconds_between_checks: float = 5
+    ) -> None:
+        """Wait for the worker to reach a status DeleteWorker accepts, else force it.
+
+        Mirrors what the EC2 workers do around their own delete. Forcing the status is the
+        fallback rather than the first move so that a worker still finishing a session is
+        given the chance to report STOPPED on its own.
+        """
+        assert self.deadline_client is not None
+        for _ in range(max_checks):
+            try:
+                status = self.deadline_client.get_worker(
+                    farmId=self.configuration.farm_id,
+                    fleetId=self.configuration.fleet.id,
+                    workerId=self.worker_id,
+                )["status"]
+            except botocore.exceptions.ClientError:
+                LOG.exception("Could not read worker status; attempting the delete anyway")
+                return
+            if status in self._DELETABLE_WORKER_STATUSES:
+                LOG.info(f"{self.worker_id} is {status}, which permits deletion")
+                return
+            LOG.info(f"Waiting for {self.worker_id} to leave status {status}")
+            time.sleep(seconds_between_checks)
+
+        LOG.warning(f"{self.worker_id} never became deletable; forcing it to STOPPED")
+        try:
+            self.deadline_client.update_worker(
+                farmId=self.configuration.farm_id,
+                fleetId=self.configuration.fleet.id,
+                workerId=self.worker_id,
+                status="STOPPED",
+            )
+        except botocore.exceptions.ClientError:
+            LOG.exception("Could not force the worker to STOPPED; attempting the delete anyway")
 
     def send_command(self, command: str, *, quiet: bool = False) -> CommandResult:
         """Run a command on this host as root, via `sudo`.
