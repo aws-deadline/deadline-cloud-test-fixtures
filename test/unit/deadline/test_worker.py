@@ -915,3 +915,256 @@ class TestSessionRuntimePassthrough:
         config_invalid = replace(base_config, session_runtime="'; rm -rf /; echo '")
         with pytest.raises(ValueError, match="Invalid session_runtime"):
             posix_worker.configure_worker_command(config_invalid)
+
+
+class TestLocalMacWorker:
+    """Covers the host-sharing hazards specific to running the agent on the test host.
+
+    Every worker in a run shares one host here, where the EC2 workers each get a fresh
+    instance, so state the installer preserves leaks forward and service transitions are
+    observable by the next worker. These assert on the generated commands rather than
+    behaviour on a real host, which is what makes them runnable off macOS.
+    """
+
+    @pytest.fixture
+    def mac_worker(self, worker_config: DeadlineWorkerConfiguration) -> Generator[Any, None, None]:
+        worker = mod.LocalMacWorker(configuration=worker_config, deadline_client=MagicMock())
+
+        def no_subprocess(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(
+                "a step under test shelled out; patch it or patch send_command. " f"args={args!r}"
+            )
+
+        # Without this an unpatched step runs `sudo` for real, which passes on a host that
+        # has it and fails only on Windows CI with an unhelpful WinError 2.
+        with patch.object(mod.subprocess, "run", no_subprocess):
+            yield worker
+
+    @staticmethod
+    def _commands(send_command: MagicMock) -> list[str]:
+        return [c.args[0] if c.args else c.kwargs["command"] for c in send_command.call_args_list]
+
+    def test_installer_runs_before_job_users_are_created(self, mac_worker: Any) -> None:
+        """The installer creates the shared job group that the job users are added to."""
+        calls: list[str] = []
+        with (
+            patch.object(mod.sys, "platform", "darwin"),
+            patch.object(mac_worker, "stop_worker_service"),
+            patch.object(mac_worker, "_stage_file_mappings"),
+            patch.object(mac_worker, "_install_agent"),
+            patch.object(mac_worker, "_reset_host_state"),
+            patch.object(mac_worker, "_run_installer", side_effect=lambda: calls.append("install")),
+            patch.object(
+                mac_worker, "_create_job_users", side_effect=lambda: calls.append("job_users")
+            ),
+            patch.object(mac_worker, "_write_impersonation_sudoers_rule"),
+            patch.object(mac_worker, "_write_agent_credentials"),
+            patch.object(mac_worker, "_configure_agent_environment"),
+            patch.object(mac_worker, "start_worker_service"),
+        ):
+            mac_worker.start()
+
+        assert calls == ["install", "job_users"]
+
+    def test_job_user_creation_adds_the_agent_user_to_each_job_group(self, mac_worker: Any) -> None:
+        """The agent chowns each queue's credentials directory to the job user's group.
+
+        Changing a file's group requires membership of the target group, so without this
+        the agent exits with EPERM on the first session it is assigned.
+        """
+        with patch.object(
+            mac_worker, "send_command", return_value=CommandResult(0, "")
+        ) as send_command:
+            mac_worker._create_job_users()
+
+        agent_user = mac_worker.configuration.agent_user
+        for job_user in mac_worker.configuration.job_users:
+            assert any(
+                f"dseditgroup -o edit -a {agent_user} -t user {job_user.group}" in cmd
+                for cmd in self._commands(send_command)
+            ), f"agent user is never added to {job_user.group}"
+
+    def test_session_runtime_edit_matches_the_uncommented_form(
+        self, worker_config: DeadlineWorkerConfiguration
+    ) -> None:
+        """install_macos.sh preserves an existing worker.toml, so on a host that has
+        already run a worker the setting is present and uncommented."""
+        from dataclasses import replace
+
+        worker = mod.LocalMacWorker(configuration=replace(worker_config, session_runtime="rust"))
+        with patch.object(
+            worker, "send_command", return_value=CommandResult(0, "")
+        ) as send_command:
+            worker._run_installer()
+
+        sed = [c for c in self._commands(send_command) if "session_runtime" in c]
+        assert sed, "no session_runtime edit was issued"
+        # `#?` so the edit applies whether or not a previous worker uncommented the line.
+        assert "s/^#? *session_runtime = .*/" in sed[0]
+        assert "-E" in sed[0], "BSD sed needs -E for the #? group"
+
+    def test_stop_worker_service_waits_for_the_label_to_go(self, mac_worker: Any) -> None:
+        """bootout returns before launchd releases the label; a bootstrap in that window
+        fails with EIO."""
+        with patch.object(
+            mac_worker, "send_command", return_value=CommandResult(0, "")
+        ) as send_command:
+            mac_worker.stop_worker_service()
+
+        cmd = self._commands(send_command)[0]
+        assert f"launchctl bootout system/{mac_worker.LAUNCHD_LABEL}" in cmd
+        assert f"launchctl print system/{mac_worker.LAUNCHD_LABEL}" in cmd, "does not poll"
+        # send_command runs `bash -euo pipefail`, and bootout exits 3 when the label is
+        # not loaded, which would abort before the poll loop.
+        assert "|| true" in cmd
+
+    def test_stop_worker_service_raises_when_the_label_persists(self, mac_worker: Any) -> None:
+        with (
+            patch.object(mac_worker, "send_command", return_value=CommandResult(1, "still there")),
+            pytest.raises(AssertionError, match="Failed to stop the worker agent service"),
+        ):
+            mac_worker.stop_worker_service()
+
+    def test_reset_host_state_removes_the_per_worker_files(self, mac_worker: Any) -> None:
+        """A stale worker.json points the next worker at a deleted worker, and a stale
+        worker.toml carries the previous worker's settings."""
+        with patch.object(
+            mac_worker, "send_command", return_value=CommandResult(0, "")
+        ) as send_command:
+            mac_worker._reset_host_state()
+
+        commands = " ".join(self._commands(send_command))
+        assert "/etc/amazon/deadline/worker.toml" in commands
+        assert "/var/lib/deadline/worker.json" in commands
+
+    def test_wait_until_deletable_returns_once_the_status_permits_it(self, mac_worker: Any) -> None:
+        mac_worker.worker_id = "worker-" + "0" * 32
+        mac_worker.deadline_client.get_worker.return_value = {"status": "STOPPED"}
+
+        mac_worker._wait_until_deletable()
+
+        mac_worker.deadline_client.update_worker.assert_not_called()
+
+    def test_wait_until_deletable_forces_stopped_as_a_last_resort(self, mac_worker: Any) -> None:
+        """DeleteWorker rejects IDLE, and an undeleted worker keeps counting against the
+        fleet's maxWorkerCount."""
+        mac_worker.worker_id = "worker-" + "0" * 32
+        mac_worker.deadline_client.get_worker.return_value = {"status": "IDLE"}
+
+        mac_worker._wait_until_deletable(max_checks=2, seconds_between_checks=0)
+
+        mac_worker.deadline_client.update_worker.assert_called_once_with(
+            farmId=mac_worker.configuration.farm_id,
+            fleetId=mac_worker.configuration.fleet.id,
+            workerId=mac_worker.worker_id,
+            status="STOPPED",
+        )
+
+    def test_host_state_is_reset_before_anything_fallible(self, mac_worker: Any) -> None:
+        """The daemon is booted out and the files cleared first, before the venv build.
+
+        A killed session leaves a loaded daemon and its worker.json. The installer reloads
+        a daemon it finds loaded, which would register a worker of its own; and if the
+        agent install fails, a surviving worker.json lets stop() adopt and delete the
+        previous run's worker while its agent is still heartbeating.
+        """
+        calls: list[str] = []
+        with (
+            patch.object(mod.sys, "platform", "darwin"),
+            patch.object(
+                mac_worker, "stop_worker_service", side_effect=lambda: calls.append("bootout")
+            ),
+            patch.object(
+                mac_worker, "_reset_host_state", side_effect=lambda: calls.append("reset")
+            ),
+            patch.object(
+                mac_worker, "_stage_file_mappings", side_effect=lambda: calls.append("stage")
+            ),
+            patch.object(mac_worker, "_install_agent", side_effect=lambda: calls.append("install")),
+            patch.object(mac_worker, "_run_installer"),
+            patch.object(mac_worker, "_create_job_users"),
+            patch.object(mac_worker, "_write_impersonation_sudoers_rule"),
+            patch.object(mac_worker, "_write_agent_credentials"),
+            patch.object(mac_worker, "_configure_agent_environment"),
+            patch.object(mac_worker, "start_worker_service"),
+        ):
+            mac_worker.start()
+
+        assert calls == ["bootout", "reset", "stage", "install"]
+
+    def test_stop_always_boots_out_the_service(self, mac_worker: Any) -> None:
+        """No flag tracks how far start() got: stop_worker_service treats an absent label
+        as success, so a guard could only suppress a bootout that was correct."""
+        with (
+            patch.object(mac_worker, "send_command", return_value=CommandResult(1, "")),
+            patch.object(mac_worker, "stop_worker_service") as stop,
+            patch.object(mac_worker, "_remove_impersonation_sudoers_rule"),
+            patch.object(mac_worker, "_reset_host_state"),
+        ):
+            mac_worker.stop()
+
+        stop.assert_called_once()
+
+    def test_worker_json_is_removed_before_the_bootstrap(self, mac_worker: Any) -> None:
+        """get_worker_id polls only until the file parses, so a pre-bootstrap worker.json
+        would be adopted as this worker's id."""
+        with (
+            patch.object(mac_worker, "stop_worker_service"),
+            patch.object(mac_worker, "send_command", return_value=CommandResult(0, "")) as send,
+            patch.object(mac_worker, "get_worker_id", return_value="worker-" + "0" * 32),
+        ):
+            mac_worker.start_worker_service()
+
+        cmd = self._commands(send)[0]
+        assert f"rm -f {mac_worker.WORKER_JSON_PATH}" in cmd
+        assert cmd.index("rm -f") < cmd.index("launchctl bootstrap")
+
+    def test_start_worker_service_waits_via_the_stop_path(self, mac_worker: Any) -> None:
+        """Reusing stop_worker_service is what makes the wait raise on a lingering label;
+        an open-coded bootout here would let the installer's daemon satisfy the
+        `state = running` check."""
+        with (
+            patch.object(mac_worker, "stop_worker_service") as stop,
+            patch.object(mac_worker, "send_command", return_value=CommandResult(0, "")),
+            patch.object(mac_worker, "get_worker_id", return_value="worker-" + "0" * 32),
+        ):
+            mac_worker.start_worker_service()
+
+        stop.assert_called_once()
+
+    def test_bootstrap_failure_is_not_swallowed_by_the_retry_loop(self, mac_worker: Any) -> None:
+        """A bash for loop exits with the status of the last command in its body, so an
+        exhausted retry loop falls through as success unless a flag is checked."""
+        with (
+            patch.object(mac_worker, "stop_worker_service"),
+            patch.object(mac_worker, "send_command", return_value=CommandResult(0, "")) as send,
+            patch.object(mac_worker, "get_worker_id", return_value="worker-" + "0" * 32),
+        ):
+            mac_worker.start_worker_service()
+
+        cmd = self._commands(send)[0]
+        assert 'test "$bootstrapped" -eq 1' in cmd, "exhausted retries would pass silently"
+
+    def test_session_runtime_edit_rejects_a_duplicated_key(
+        self, worker_config: DeadlineWorkerConfiguration
+    ) -> None:
+        """Two session_runtime lines are a TOML parse error the agent reports only as a
+        refusal to start, and a presence check cannot see it."""
+        from dataclasses import replace
+
+        worker = mod.LocalMacWorker(configuration=replace(worker_config, session_runtime="python"))
+        with patch.object(
+            worker, "send_command", return_value=CommandResult(0, "")
+        ) as send_command:
+            worker._run_installer()
+
+        cmd = self._commands(send_command)[0]
+        assert "grep -c '^session_runtime = '" in cmd
+        assert "-eq 1" in cmd
+
+    def test_start_requires_macos(self, mac_worker: Any) -> None:
+        with (
+            patch.object(mod.sys, "platform", "linux"),
+            pytest.raises(AssertionError, match="requires macOS"),
+        ):
+            mac_worker.start()

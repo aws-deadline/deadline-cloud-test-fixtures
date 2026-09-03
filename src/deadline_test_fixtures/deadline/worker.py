@@ -1311,6 +1311,9 @@ class LocalMacWorker(DeadlineWorker):
 
     worker_id: str | None = field(init=False, default=None)
 
+    WORKER_JSON_PATH: ClassVar[str] = "/var/lib/deadline/worker.json"
+    WORKER_TOML_PATH: ClassVar[str] = "/etc/amazon/deadline/worker.toml"
+
     LAUNCHD_LABEL: ClassVar[str] = "com.amazon.deadline.worker-agent"
     LAUNCHD_PLIST: ClassVar[str] = f"/Library/LaunchDaemons/{LAUNCHD_LABEL}.plist"
 
@@ -1321,7 +1324,6 @@ class LocalMacWorker(DeadlineWorker):
         "print(json.load(open('/var/lib/deadline/worker.json'))['worker_id'])\""
     )
 
-    _started: bool = field(init=False, default=False)
     _agent_home: str | None = field(init=False, default=None)
 
     def start(self) -> None:
@@ -1335,14 +1337,29 @@ class LocalMacWorker(DeadlineWorker):
             not self.configuration.no_install_service
         ), "LocalMacWorker does not support no_install_service: it manages the agent's LaunchDaemon."
 
+        # First, before anything slow or fallible. A session killed mid-run leaves both a
+        # loaded daemon and its worker.json behind, and the installer reloads a daemon it
+        # finds loaded, which would register a worker of its own that get_worker_id could
+        # then read instead of this one's. Booting out precedes the file removal so
+        # nothing is running that could rewrite worker.json afterwards.
+        #
+        # Placing these ahead of _install_agent also matters on failure: that step builds
+        # a venv and pip installs, so it is the slowest and most fallible part of start(),
+        # and a stale worker.json surviving it would let stop() adopt and delete the
+        # previous run's worker while its agent is still heartbeating.
+        self.stop_worker_service()
+        self._reset_host_state()
+
         self._stage_file_mappings()
         self._install_agent()
-        self._create_job_users()
+        # After the installer, which creates the shared job group that _create_job_users
+        # adds each job user to. Creating the users first fails on a host where that group
+        # does not already exist.
         self._run_installer()
+        self._create_job_users()
         self._write_impersonation_sudoers_rule()
         self._write_agent_credentials()
         self._configure_agent_environment()
-        self._started = True
 
         if self.configuration.start_service:
             self.start_worker_service()
@@ -1359,13 +1376,17 @@ class LocalMacWorker(DeadlineWorker):
             if result.exit_code == 0 and re.match(r"^worker-[0-9a-f]{32}$", candidate):
                 self.worker_id = candidate
 
-        if self._started:
-            try:
-                self.stop_worker_service()
-            except Exception:  # pragma: no cover
-                LOG.exception("Failed to stop the worker agent service; continuing cleanup")
+        # Unconditional. stop_worker_service treats an absent label as success, so there is
+        # nothing to guard against, and a flag tracking how far start() got could only
+        # suppress a bootout that was correct -- leaving a daemon from a failed start
+        # running on a host every later worker shares.
+        try:
+            self.stop_worker_service()
+        except Exception:  # pragma: no cover
+            LOG.exception("Failed to stop the worker agent service; continuing cleanup")
 
         self._remove_impersonation_sudoers_rule()
+        self._reset_host_state()
 
         if not self.worker_id:
             LOG.info("No worker_id available, skipping worker cleanup")
@@ -1381,6 +1402,12 @@ class LocalMacWorker(DeadlineWorker):
             )
             return
 
+        # DeleteWorker only accepts CREATED, DELETED, STOPPED and NOT_RESPONDING. Booting
+        # out the LaunchDaemon sends SIGTERM, and the agent reports STOPPED as it exits,
+        # but the delete below would otherwise race that final UpdateWorker and be
+        # rejected while the worker is still IDLE.
+        self._wait_until_deletable()
+
         try:
             self.deadline_client.delete_worker(
                 farmId=self.configuration.farm_id,
@@ -1391,6 +1418,71 @@ class LocalMacWorker(DeadlineWorker):
         except botocore.exceptions.ClientError:
             LOG.exception("Failed to delete worker")
             raise
+
+    _DELETABLE_WORKER_STATUSES: ClassVar[frozenset[str]] = frozenset(
+        {"CREATED", "DELETED", "STOPPED", "NOT_RESPONDING"}
+    )
+
+    # Generous: the agent's shutdown includes an UpdateWorker call, so the label can stay
+    # registered for as long as that request takes plus launchd's own teardown.
+    _BOOTOUT_MAX_CHECKS: ClassVar[int] = 60
+    _BOOTOUT_CHECK_INTERVAL_S: ClassVar[float] = 0.5
+    _BOOTSTRAP_MAX_ATTEMPTS: ClassVar[int] = 10
+
+    def _wait_until_deletable(
+        self, *, max_checks: int = 12, seconds_between_checks: float = 5
+    ) -> None:
+        """Wait for the worker to reach a status DeleteWorker accepts, else force it.
+
+        Mirrors what the EC2 workers do around their own delete. Forcing the status is the
+        fallback rather than the first move so that a worker still finishing a session is
+        given the chance to report STOPPED on its own.
+        """
+        assert self.deadline_client is not None
+        for _ in range(max_checks):
+            try:
+                status = self.deadline_client.get_worker(
+                    farmId=self.configuration.farm_id,
+                    fleetId=self.configuration.fleet.id,
+                    workerId=self.worker_id,
+                )["status"]
+            except botocore.exceptions.ClientError:
+                LOG.exception("Could not read worker status; attempting the delete anyway")
+                return
+            if status in self._DELETABLE_WORKER_STATUSES:
+                LOG.info(f"{self.worker_id} is {status}, which permits deletion")
+                return
+            LOG.info(f"Waiting for {self.worker_id} to leave status {status}")
+            time.sleep(seconds_between_checks)
+
+        LOG.warning(f"{self.worker_id} never became deletable; forcing it to STOPPED")
+        try:
+            self.deadline_client.update_worker(
+                farmId=self.configuration.farm_id,
+                fleetId=self.configuration.fleet.id,
+                workerId=self.worker_id,
+                status="STOPPED",
+            )
+        except botocore.exceptions.ClientError:
+            LOG.exception("Could not force the worker to STOPPED; attempting the delete anyway")
+
+    def _reset_host_state(self) -> None:
+        """Remove the per-worker files the next worker on this host must not inherit.
+
+        The EC2 workers get a fresh instance each time, so nothing carries over. Every
+        worker in a run shares this host, and the installer deliberately preserves an
+        existing `worker.toml`, so without this the next worker starts from the last
+        one's configuration and a stale `worker.json` points it at a deleted worker.
+
+        Called from `start()` before anything fallible, and again from `stop()` after the
+        worker id has been read from `worker.json`. Best-effort in both: a host left
+        slightly dirty is a worse outcome than a teardown that stops before deleting the
+        worker.
+        """
+        for path in (self.WORKER_TOML_PATH, self.WORKER_JSON_PATH):
+            result = self.send_command(f"rm -f {path}", quiet=True)
+            if result.exit_code != 0:
+                LOG.warning(f"Could not remove {path}: {result.stdout}")
 
     def send_command(self, command: str, *, quiet: bool = False) -> CommandResult:
         """Run a command on this host as root, via `sudo`.
@@ -1545,6 +1637,12 @@ class LocalMacWorker(DeadlineWorker):
         session root is nested under `/var/lib/deadline`, which is mode 0750 and
         owned by that group, so a job user outside it gets EACCES on its own
         session directory.
+
+        The agent user also joins each job user's own group, mirroring the
+        `usermod -a -G` the EC2 workers run. The agent chowns each queue's
+        credentials directory to that group, and changing a file's group requires
+        the caller to belong to the target group, so without this the agent exits
+        with EPERM on the first session it is assigned.
         """
         for job_user in self.configuration.job_users:
             LOG.info(f"Creating job user {job_user.user}")
@@ -1581,6 +1679,10 @@ class LocalMacWorker(DeadlineWorker):
                             f"dseditgroup -o edit -a {job_user.user} -t user "
                             f"{self.configuration.job_user_group}"
                         ),
+                        (
+                            f"dseditgroup -o edit -a {self.configuration.agent_user} "
+                            f"-t user {job_user.group}"
+                        ),
                     ]
                 ),
             )
@@ -1611,17 +1713,27 @@ class LocalMacWorker(DeadlineWorker):
 
         if config.session_runtime:
             _validate_session_runtime(config.session_runtime)
-            # The installer writes this setting commented out, so uncomment and
-            # set it. BSD sed requires an argument to -i, unlike GNU sed. sed
-            # exits 0 when nothing matched, so the grep below is what catches a
-            # worker left on the default runtime.
+            # The installer writes this setting commented out, but it preserves an
+            # existing worker.toml, so on a host that has already hosted a worker the
+            # line is present and uncommented. Matching `#?` covers both, which matters
+            # here and not on EC2 because every worker on this host shares one file.
+            # BSD sed requires an argument to -i, unlike GNU sed. sed exits 0 when
+            # nothing matched, so the grep below is what catches a worker left on the
+            # default runtime.
             cmds.append(
-                f"sed -i '' 's/^# session_runtime = .*/session_runtime = "
+                f"sed -i '' -E 's/^#? *session_runtime = .*/session_runtime = "
                 f'"{config.session_runtime}"/\' /etc/amazon/deadline/worker.toml'
             )
             cmds.append(
                 f"grep -q '^session_runtime = \"{config.session_runtime}\"' "
                 "/etc/amazon/deadline/worker.toml"
+            )
+            # Counted, not just matched: were the file ever to hold both the commented
+            # template line and a live setting, the `#?` above would rewrite both and
+            # leave a duplicate key, which is a TOML parse error the agent only reports
+            # later as a refusal to start. A presence check cannot see that.
+            cmds.append(
+                "test \"$(grep -c '^session_runtime = ' " '/etc/amazon/deadline/worker.toml)" -eq 1'
             )
 
         self._run("install-deadline-worker", " && ".join(cmds))
@@ -1754,10 +1866,39 @@ class LocalMacWorker(DeadlineWorker):
 
     def start_worker_service(self) -> None:
         LOG.info("Bootstrapping the worker agent LaunchDaemon")
+        # The installer loads the daemon itself when it detects a previously loaded one,
+        # and bootstrap on an already-loaded label fails with "Input/output error" rather
+        # than succeeding quietly. Going through stop_worker_service rather than
+        # open-coding a bootout here means the wait for launchd to release the label is
+        # written once and, crucially, raises if the label never goes: otherwise the
+        # `state = running` check below can be satisfied by the daemon the installer
+        # loaded, which never picked up the plist environment written after it started.
+        self.stop_worker_service()
         result = self.send_command(
             " && ".join(
                 [
-                    f"launchctl bootstrap system {self.LAUNCHD_PLIST}",
+                    # get_worker_id polls only until worker.json parses, so any file left by
+                    # an earlier agent would be read as this worker's id. Removed once the
+                    # stop above has confirmed the old daemon is gone, so nothing is running
+                    # that could write it back before the bootstrap below.
+                    f"rm -f {self.WORKER_JSON_PATH}",
+                    # Retried because the label can linger a moment past the wait above,
+                    # and the failure mode is an unhelpful "Input/output error". The
+                    # explicit flag matters: a bash for loop exits with the status of the
+                    # last command in its body, so an exhausted retry loop would otherwise
+                    # fall through as success.
+                    (
+                        f"bootstrapped=0; "
+                        f"for attempt in $(seq 1 {self._BOOTSTRAP_MAX_ATTEMPTS}); do "
+                        f"  if launchctl bootstrap system {self.LAUNCHD_PLIST}; then "
+                        f"    bootstrapped=1; break; "
+                        f"  fi; "
+                        f'  echo "bootstrap attempt $attempt failed; retrying"; '
+                        f"  sleep 1; "
+                        f"done; "
+                        f'test "$bootstrapped" -eq 1 '
+                        f"|| {{ echo '+++BOOTSTRAP NEVER SUCCEEDED+++'; exit 1; }}"
+                    ),
                     "sleep 5",
                     # launchctl reports a pid even for a process that exited
                     # immediately, so `state = running` is the check that means
@@ -1776,17 +1917,27 @@ class LocalMacWorker(DeadlineWorker):
         self.worker_id = self.get_worker_id()
 
     def stop_worker_service(self) -> None:
+        """Boot out the LaunchDaemon and return only once launchd has released the label.
+
+        `launchctl bootout` is asynchronous: it returns as soon as the signal is sent,
+        while the agent is still shutting down and the label is still registered. A
+        `bootstrap` issued in that window fails with "Input/output error", so a caller
+        that stops and immediately restarts the service cannot rely on bootout alone.
+
+        Polling `launchctl print` also subsumes the previous special case for a daemon
+        that was never bootstrapped: the label is absent either way.
+        """
         LOG.info("Booting out the worker agent LaunchDaemon")
-        result = self.send_command(f"launchctl bootout system/{self.LAUNCHD_LABEL}")
-        if result.exit_code == 0:
-            return
-        # bootout fails when the daemon was never bootstrapped, which is the normal
-        # case for start_service=False or a start() that raised early. Treat that as
-        # success so teardown does not log an exception for an expected state.
-        if re.search(r"[Nn]o such process|[Cc]ould not find", result.stdout):
-            LOG.info("Worker agent service was not loaded; nothing to boot out")
-            return
-        raise AssertionError(f"Failed to stop the worker agent service: {result}")
+        result = self.send_command(
+            f"launchctl bootout system/{self.LAUNCHD_LABEL} 2>&1 || true; "
+            f"for _ in $(seq 1 {self._BOOTOUT_MAX_CHECKS}); do "
+            f"  launchctl print system/{self.LAUNCHD_LABEL} >/dev/null 2>&1 || exit 0; "
+            f"  sleep {self._BOOTOUT_CHECK_INTERVAL_S}; "
+            f"done; "
+            f"echo 'label {self.LAUNCHD_LABEL} still registered'; exit 1"
+        )
+        if result.exit_code != 0:
+            raise AssertionError(f"Failed to stop the worker agent service: {result}")
 
     def get_worker_id(self) -> str:
         cmd_result: CommandResult | None = None
