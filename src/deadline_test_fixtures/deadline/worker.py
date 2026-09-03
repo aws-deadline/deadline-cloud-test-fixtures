@@ -1410,6 +1410,12 @@ class LocalMacWorker(DeadlineWorker):
         {"CREATED", "DELETED", "STOPPED", "NOT_RESPONDING"}
     )
 
+    # Generous: the agent's shutdown includes an UpdateWorker call, so the label can stay
+    # registered for as long as that request takes plus launchd's own teardown.
+    _BOOTOUT_MAX_CHECKS: ClassVar[int] = 60
+    _BOOTOUT_CHECK_INTERVAL_S: ClassVar[float] = 0.5
+    _BOOTSTRAP_MAX_ATTEMPTS: ClassVar[int] = 10
+
     def _wait_until_deletable(
         self, *, max_checks: int = 12, seconds_between_checks: float = 5
     ) -> None:
@@ -1843,10 +1849,26 @@ class LocalMacWorker(DeadlineWorker):
                 [
                     # The installer loads the daemon itself when it detects a previously
                     # loaded one, and bootstrap on an already-loaded label fails with
-                    # "Input/output error" rather than succeeding quietly. Boot it out
-                    # first so this is idempotent regardless of what the installer did.
-                    f"(launchctl bootout system/{self.LAUNCHD_LABEL} 2>/dev/null || true)",
-                    f"launchctl bootstrap system {self.LAUNCHD_PLIST}",
+                    # "Input/output error" rather than succeeding quietly. Boot out and
+                    # wait for the label to go, so this is idempotent regardless of what
+                    # the installer did. bootout alone is not enough: it returns before
+                    # launchd releases the label.
+                    (
+                        f"launchctl bootout system/{self.LAUNCHD_LABEL} >/dev/null 2>&1 || true; "
+                        f"for _ in $(seq 1 {self._BOOTOUT_MAX_CHECKS}); do "
+                        f"  launchctl print system/{self.LAUNCHD_LABEL} >/dev/null 2>&1 || break; "
+                        f"  sleep {self._BOOTOUT_CHECK_INTERVAL_S}; "
+                        f"done"
+                    ),
+                    # Retried anyway: the label can linger a moment past the check above,
+                    # and the failure mode is an unhelpful "Input/output error".
+                    (
+                        f"for attempt in $(seq 1 {self._BOOTSTRAP_MAX_ATTEMPTS}); do "
+                        f"  launchctl bootstrap system {self.LAUNCHD_PLIST} && break; "
+                        f'  echo "bootstrap attempt $attempt failed; retrying"; '
+                        f"  sleep 1; "
+                        f"done"
+                    ),
                     "sleep 5",
                     # launchctl reports a pid even for a process that exited
                     # immediately, so `state = running` is the check that means
@@ -1865,17 +1887,27 @@ class LocalMacWorker(DeadlineWorker):
         self.worker_id = self.get_worker_id()
 
     def stop_worker_service(self) -> None:
+        """Boot out the LaunchDaemon and return only once launchd has released the label.
+
+        `launchctl bootout` is asynchronous: it returns as soon as the signal is sent,
+        while the agent is still shutting down and the label is still registered. A
+        `bootstrap` issued in that window fails with "Input/output error", so a caller
+        that stops and immediately restarts the service cannot rely on bootout alone.
+
+        Polling `launchctl print` also subsumes the previous special case for a daemon
+        that was never bootstrapped: the label is absent either way.
+        """
         LOG.info("Booting out the worker agent LaunchDaemon")
-        result = self.send_command(f"launchctl bootout system/{self.LAUNCHD_LABEL}")
-        if result.exit_code == 0:
-            return
-        # bootout fails when the daemon was never bootstrapped, which is the normal
-        # case for start_service=False or a start() that raised early. Treat that as
-        # success so teardown does not log an exception for an expected state.
-        if re.search(r"[Nn]o such process|[Cc]ould not find", result.stdout):
-            LOG.info("Worker agent service was not loaded; nothing to boot out")
-            return
-        raise AssertionError(f"Failed to stop the worker agent service: {result}")
+        result = self.send_command(
+            f"launchctl bootout system/{self.LAUNCHD_LABEL} 2>&1 || true; "
+            f"for _ in $(seq 1 {self._BOOTOUT_MAX_CHECKS}); do "
+            f"  launchctl print system/{self.LAUNCHD_LABEL} >/dev/null 2>&1 || exit 0; "
+            f"  sleep {self._BOOTOUT_CHECK_INTERVAL_S}; "
+            f"done; "
+            f"echo 'label {self.LAUNCHD_LABEL} still registered'; exit 1"
+        )
+        if result.exit_code != 0:
+            raise AssertionError(f"Failed to stop the worker agent service: {result}")
 
     def get_worker_id(self) -> str:
         cmd_result: CommandResult | None = None
