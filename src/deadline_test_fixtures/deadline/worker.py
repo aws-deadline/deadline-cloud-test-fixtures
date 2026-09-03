@@ -1337,6 +1337,11 @@ class LocalMacWorker(DeadlineWorker):
 
         self._stage_file_mappings()
         self._install_agent()
+        # Set before the installer runs, not after the whole sequence succeeds: the
+        # installer loads the LaunchDaemon when it finds a previously loaded one, so a
+        # failure anywhere below leaves an agent running unless stop() knows to boot it
+        # out. A stop that boots out a daemon which was never loaded is harmless.
+        self._started = True
         # After the installer, which creates the shared job group that _create_job_users
         # adds each job user to. Creating the users first fails on a host where that group
         # does not already exist.
@@ -1345,7 +1350,6 @@ class LocalMacWorker(DeadlineWorker):
         self._write_impersonation_sudoers_rule()
         self._write_agent_credentials()
         self._configure_agent_environment()
-        self._started = True
 
         if self.configuration.start_service:
             self.start_worker_service()
@@ -1837,6 +1841,11 @@ class LocalMacWorker(DeadlineWorker):
         result = self.send_command(
             " && ".join(
                 [
+                    # The installer loads the daemon itself when it detects a previously
+                    # loaded one, and bootstrap on an already-loaded label fails with
+                    # "Input/output error" rather than succeeding quietly. Boot it out
+                    # first so this is idempotent regardless of what the installer did.
+                    f"(launchctl bootout system/{self.LAUNCHD_LABEL} 2>/dev/null || true)",
                     f"launchctl bootstrap system {self.LAUNCHD_PLIST}",
                     "sleep 5",
                     # launchctl reports a pid even for a process that exited
