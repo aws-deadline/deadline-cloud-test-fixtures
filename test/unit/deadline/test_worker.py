@@ -949,6 +949,7 @@ class TestLocalMacWorker:
         calls: list[str] = []
         with (
             patch.object(mod.sys, "platform", "darwin"),
+            patch.object(mac_worker, "stop_worker_service"),
             patch.object(mac_worker, "_stage_file_mappings"),
             patch.object(mac_worker, "_install_agent"),
             patch.object(mac_worker, "_reset_host_state"),
@@ -964,27 +965,6 @@ class TestLocalMacWorker:
             mac_worker.start()
 
         assert calls == ["install", "job_users"]
-
-    def test_start_marks_started_before_the_installer(self, mac_worker: Any) -> None:
-        """The installer can leave the daemon loaded, so a later failure must still stop it."""
-        seen: list[bool] = []
-        with (
-            patch.object(mod.sys, "platform", "darwin"),
-            patch.object(mac_worker, "_stage_file_mappings"),
-            patch.object(mac_worker, "_install_agent"),
-            patch.object(mac_worker, "_reset_host_state"),
-            patch.object(
-                mac_worker, "_run_installer", side_effect=lambda: seen.append(mac_worker._started)
-            ),
-            patch.object(mac_worker, "_create_job_users"),
-            patch.object(mac_worker, "_write_impersonation_sudoers_rule"),
-            patch.object(mac_worker, "_write_agent_credentials"),
-            patch.object(mac_worker, "_configure_agent_environment"),
-            patch.object(mac_worker, "start_worker_service"),
-        ):
-            mac_worker.start()
-
-        assert seen == [True]
 
     def test_job_user_creation_adds_the_agent_user_to_each_job_group(self, mac_worker: Any) -> None:
         """The agent chowns each queue's credentials directory to the job user's group.
@@ -1080,18 +1060,28 @@ class TestLocalMacWorker:
             status="STOPPED",
         )
 
-    def test_host_state_is_reset_before_the_installer_runs(self, mac_worker: Any) -> None:
-        """stop() is not guaranteed to run, and a surviving worker.json makes
-        get_worker_id adopt the previous worker's id."""
+    def test_host_state_is_reset_before_anything_fallible(self, mac_worker: Any) -> None:
+        """The daemon is booted out and the files cleared first, before the venv build.
+
+        A killed session leaves a loaded daemon and its worker.json. The installer reloads
+        a daemon it finds loaded, which would register a worker of its own; and if the
+        agent install fails, a surviving worker.json lets stop() adopt and delete the
+        previous run's worker while its agent is still heartbeating.
+        """
         calls: list[str] = []
         with (
             patch.object(mod.sys, "platform", "darwin"),
-            patch.object(mac_worker, "_stage_file_mappings"),
-            patch.object(mac_worker, "_install_agent"),
+            patch.object(
+                mac_worker, "stop_worker_service", side_effect=lambda: calls.append("bootout")
+            ),
             patch.object(
                 mac_worker, "_reset_host_state", side_effect=lambda: calls.append("reset")
             ),
-            patch.object(mac_worker, "_run_installer", side_effect=lambda: calls.append("install")),
+            patch.object(
+                mac_worker, "_stage_file_mappings", side_effect=lambda: calls.append("stage")
+            ),
+            patch.object(mac_worker, "_install_agent", side_effect=lambda: calls.append("install")),
+            patch.object(mac_worker, "_run_installer"),
             patch.object(mac_worker, "_create_job_users"),
             patch.object(mac_worker, "_write_impersonation_sudoers_rule"),
             patch.object(mac_worker, "_write_agent_credentials"),
@@ -1100,7 +1090,34 @@ class TestLocalMacWorker:
         ):
             mac_worker.start()
 
-        assert calls == ["reset", "install"]
+        assert calls == ["bootout", "reset", "stage", "install"]
+
+    def test_stop_always_boots_out_the_service(self, mac_worker: Any) -> None:
+        """No flag tracks how far start() got: stop_worker_service treats an absent label
+        as success, so a guard could only suppress a bootout that was correct."""
+        with (
+            patch.object(mac_worker, "send_command", return_value=CommandResult(1, "")),
+            patch.object(mac_worker, "stop_worker_service") as stop,
+            patch.object(mac_worker, "_remove_impersonation_sudoers_rule"),
+            patch.object(mac_worker, "_reset_host_state"),
+        ):
+            mac_worker.stop()
+
+        stop.assert_called_once()
+
+    def test_worker_json_is_removed_before_the_bootstrap(self, mac_worker: Any) -> None:
+        """get_worker_id polls only until the file parses, so a pre-bootstrap worker.json
+        would be adopted as this worker's id."""
+        with (
+            patch.object(mac_worker, "stop_worker_service"),
+            patch.object(mac_worker, "send_command", return_value=CommandResult(0, "")) as send,
+            patch.object(mac_worker, "get_worker_id", return_value="worker-" + "0" * 32),
+        ):
+            mac_worker.start_worker_service()
+
+        cmd = self._commands(send)[0]
+        assert f"rm -f {mac_worker.WORKER_JSON_PATH}" in cmd
+        assert cmd.index("rm -f") < cmd.index("launchctl bootstrap")
 
     def test_start_worker_service_waits_via_the_stop_path(self, mac_worker: Any) -> None:
         """Reusing stop_worker_service is what makes the wait raise on a lingering label;

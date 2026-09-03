@@ -1311,6 +1311,9 @@ class LocalMacWorker(DeadlineWorker):
 
     worker_id: str | None = field(init=False, default=None)
 
+    WORKER_JSON_PATH: ClassVar[str] = "/var/lib/deadline/worker.json"
+    WORKER_TOML_PATH: ClassVar[str] = "/etc/amazon/deadline/worker.toml"
+
     LAUNCHD_LABEL: ClassVar[str] = "com.amazon.deadline.worker-agent"
     LAUNCHD_PLIST: ClassVar[str] = f"/Library/LaunchDaemons/{LAUNCHD_LABEL}.plist"
 
@@ -1321,7 +1324,6 @@ class LocalMacWorker(DeadlineWorker):
         "print(json.load(open('/var/lib/deadline/worker.json'))['worker_id'])\""
     )
 
-    _started: bool = field(init=False, default=False)
     _agent_home: str | None = field(init=False, default=None)
 
     def start(self) -> None:
@@ -1335,19 +1337,21 @@ class LocalMacWorker(DeadlineWorker):
             not self.configuration.no_install_service
         ), "LocalMacWorker does not support no_install_service: it manages the agent's LaunchDaemon."
 
+        # First, before anything slow or fallible. A session killed mid-run leaves both a
+        # loaded daemon and its worker.json behind, and the installer reloads a daemon it
+        # finds loaded, which would register a worker of its own that get_worker_id could
+        # then read instead of this one's. Booting out precedes the file removal so
+        # nothing is running that could rewrite worker.json afterwards.
+        #
+        # Placing these ahead of _install_agent also matters on failure: that step builds
+        # a venv and pip installs, so it is the slowest and most fallible part of start(),
+        # and a stale worker.json surviving it would let stop() adopt and delete the
+        # previous run's worker while its agent is still heartbeating.
+        self.stop_worker_service()
+        self._reset_host_state()
+
         self._stage_file_mappings()
         self._install_agent()
-        # Set before the installer runs, not after the whole sequence succeeds: the
-        # installer loads the LaunchDaemon when it finds a previously loaded one, so a
-        # failure anywhere below leaves an agent running unless stop() knows to boot it
-        # out. A stop that boots out a daemon which was never loaded is harmless.
-        self._started = True
-        # Before the installer, not only on the teardown path: stop() does not run when a
-        # session is killed or raises early, and a surviving worker.json makes
-        # get_worker_id adopt the previous worker's id, since it polls only until the file
-        # parses. Clearing it here makes teardown-time cleanup a nicety rather than
-        # load-bearing, and leaves the installer to write a fresh worker.toml.
-        self._reset_host_state()
         # After the installer, which creates the shared job group that _create_job_users
         # adds each job user to. Creating the users first fails on a host where that group
         # does not already exist.
@@ -1372,11 +1376,14 @@ class LocalMacWorker(DeadlineWorker):
             if result.exit_code == 0 and re.match(r"^worker-[0-9a-f]{32}$", candidate):
                 self.worker_id = candidate
 
-        if self._started:
-            try:
-                self.stop_worker_service()
-            except Exception:  # pragma: no cover
-                LOG.exception("Failed to stop the worker agent service; continuing cleanup")
+        # Unconditional. stop_worker_service treats an absent label as success, so there is
+        # nothing to guard against, and a flag tracking how far start() got could only
+        # suppress a bootout that was correct -- leaving a daemon from a failed start
+        # running on a host every later worker shares.
+        try:
+            self.stop_worker_service()
+        except Exception:  # pragma: no cover
+            LOG.exception("Failed to stop the worker agent service; continuing cleanup")
 
         self._remove_impersonation_sudoers_rule()
         self._reset_host_state()
@@ -1467,10 +1474,12 @@ class LocalMacWorker(DeadlineWorker):
         existing `worker.toml`, so without this the next worker starts from the last
         one's configuration and a stale `worker.json` points it at a deleted worker.
 
-        Runs after the worker id has been read, and best-effort: a host left slightly
-        dirty is a worse outcome than a teardown that stops before deleting the worker.
+        Called from `start()` before anything fallible, and again from `stop()` after the
+        worker id has been read from `worker.json`. Best-effort in both: a host left
+        slightly dirty is a worse outcome than a teardown that stops before deleting the
+        worker.
         """
-        for path in ("/etc/amazon/deadline/worker.toml", "/var/lib/deadline/worker.json"):
+        for path in (self.WORKER_TOML_PATH, self.WORKER_JSON_PATH):
             result = self.send_command(f"rm -f {path}", quiet=True)
             if result.exit_code != 0:
                 LOG.warning(f"Could not remove {path}: {result.stdout}")
@@ -1868,6 +1877,11 @@ class LocalMacWorker(DeadlineWorker):
         result = self.send_command(
             " && ".join(
                 [
+                    # get_worker_id polls only until worker.json parses, so any file left by
+                    # an earlier agent would be read as this worker's id. Removed once the
+                    # stop above has confirmed the old daemon is gone, so nothing is running
+                    # that could write it back before the bootstrap below.
+                    f"rm -f {self.WORKER_JSON_PATH}",
                     # Retried because the label can linger a moment past the wait above,
                     # and the failure mode is an unhelpful "Input/output error". The
                     # explicit flag matters: a bash for loop exits with the status of the
