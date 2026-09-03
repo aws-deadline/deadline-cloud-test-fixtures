@@ -1342,6 +1342,12 @@ class LocalMacWorker(DeadlineWorker):
         # failure anywhere below leaves an agent running unless stop() knows to boot it
         # out. A stop that boots out a daemon which was never loaded is harmless.
         self._started = True
+        # Before the installer, not only on the teardown path: stop() does not run when a
+        # session is killed or raises early, and a surviving worker.json makes
+        # get_worker_id adopt the previous worker's id, since it polls only until the file
+        # parses. Clearing it here makes teardown-time cleanup a nicety rather than
+        # load-bearing, and leaves the installer to write a fresh worker.toml.
+        self._reset_host_state()
         # After the installer, which creates the shared job group that _create_job_users
         # adds each job user to. Creating the users first fails on a host where that group
         # does not already exist.
@@ -1713,6 +1719,13 @@ class LocalMacWorker(DeadlineWorker):
                 f"grep -q '^session_runtime = \"{config.session_runtime}\"' "
                 "/etc/amazon/deadline/worker.toml"
             )
+            # Counted, not just matched: were the file ever to hold both the commented
+            # template line and a live setting, the `#?` above would rewrite both and
+            # leave a duplicate key, which is a TOML parse error the agent only reports
+            # later as a refusal to start. A presence check cannot see that.
+            cmds.append(
+                "test \"$(grep -c '^session_runtime = ' " '/etc/amazon/deadline/worker.toml)" -eq 1'
+            )
 
         self._run("install-deadline-worker", " && ".join(cmds))
 
@@ -1844,30 +1857,33 @@ class LocalMacWorker(DeadlineWorker):
 
     def start_worker_service(self) -> None:
         LOG.info("Bootstrapping the worker agent LaunchDaemon")
+        # The installer loads the daemon itself when it detects a previously loaded one,
+        # and bootstrap on an already-loaded label fails with "Input/output error" rather
+        # than succeeding quietly. Going through stop_worker_service rather than
+        # open-coding a bootout here means the wait for launchd to release the label is
+        # written once and, crucially, raises if the label never goes: otherwise the
+        # `state = running` check below can be satisfied by the daemon the installer
+        # loaded, which never picked up the plist environment written after it started.
+        self.stop_worker_service()
         result = self.send_command(
             " && ".join(
                 [
-                    # The installer loads the daemon itself when it detects a previously
-                    # loaded one, and bootstrap on an already-loaded label fails with
-                    # "Input/output error" rather than succeeding quietly. Boot out and
-                    # wait for the label to go, so this is idempotent regardless of what
-                    # the installer did. bootout alone is not enough: it returns before
-                    # launchd releases the label.
+                    # Retried because the label can linger a moment past the wait above,
+                    # and the failure mode is an unhelpful "Input/output error". The
+                    # explicit flag matters: a bash for loop exits with the status of the
+                    # last command in its body, so an exhausted retry loop would otherwise
+                    # fall through as success.
                     (
-                        f"launchctl bootout system/{self.LAUNCHD_LABEL} >/dev/null 2>&1 || true; "
-                        f"for _ in $(seq 1 {self._BOOTOUT_MAX_CHECKS}); do "
-                        f"  launchctl print system/{self.LAUNCHD_LABEL} >/dev/null 2>&1 || break; "
-                        f"  sleep {self._BOOTOUT_CHECK_INTERVAL_S}; "
-                        f"done"
-                    ),
-                    # Retried anyway: the label can linger a moment past the check above,
-                    # and the failure mode is an unhelpful "Input/output error".
-                    (
+                        f"bootstrapped=0; "
                         f"for attempt in $(seq 1 {self._BOOTSTRAP_MAX_ATTEMPTS}); do "
-                        f"  launchctl bootstrap system {self.LAUNCHD_PLIST} && break; "
+                        f"  if launchctl bootstrap system {self.LAUNCHD_PLIST}; then "
+                        f"    bootstrapped=1; break; "
+                        f"  fi; "
                         f'  echo "bootstrap attempt $attempt failed; retrying"; '
                         f"  sleep 1; "
-                        f"done"
+                        f"done; "
+                        f'test "$bootstrapped" -eq 1 '
+                        f"|| {{ echo '+++BOOTSTRAP NEVER SUCCEEDED+++'; exit 1; }}"
                     ),
                     "sleep 5",
                     # launchctl reports a pid even for a process that exited

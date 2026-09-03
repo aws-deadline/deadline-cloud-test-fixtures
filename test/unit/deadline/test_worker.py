@@ -927,9 +927,18 @@ class TestLocalMacWorker:
     """
 
     @pytest.fixture
-    def mac_worker(self, worker_config: DeadlineWorkerConfiguration) -> Any:
+    def mac_worker(self, worker_config: DeadlineWorkerConfiguration) -> Generator[Any, None, None]:
         worker = mod.LocalMacWorker(configuration=worker_config, deadline_client=MagicMock())
-        return worker
+
+        def no_subprocess(*args: Any, **kwargs: Any) -> Any:
+            raise AssertionError(
+                "a step under test shelled out; patch it or patch send_command. " f"args={args!r}"
+            )
+
+        # Without this an unpatched step runs `sudo` for real, which passes on a host that
+        # has it and fails only on Windows CI with an unhelpful WinError 2.
+        with patch.object(mod.subprocess, "run", no_subprocess):
+            yield worker
 
     @staticmethod
     def _commands(send_command: MagicMock) -> list[str]:
@@ -942,6 +951,7 @@ class TestLocalMacWorker:
             patch.object(mod.sys, "platform", "darwin"),
             patch.object(mac_worker, "_stage_file_mappings"),
             patch.object(mac_worker, "_install_agent"),
+            patch.object(mac_worker, "_reset_host_state"),
             patch.object(mac_worker, "_run_installer", side_effect=lambda: calls.append("install")),
             patch.object(
                 mac_worker, "_create_job_users", side_effect=lambda: calls.append("job_users")
@@ -962,6 +972,7 @@ class TestLocalMacWorker:
             patch.object(mod.sys, "platform", "darwin"),
             patch.object(mac_worker, "_stage_file_mappings"),
             patch.object(mac_worker, "_install_agent"),
+            patch.object(mac_worker, "_reset_host_state"),
             patch.object(
                 mac_worker, "_run_installer", side_effect=lambda: seen.append(mac_worker._started)
             ),
@@ -1068,6 +1079,71 @@ class TestLocalMacWorker:
             workerId=mac_worker.worker_id,
             status="STOPPED",
         )
+
+    def test_host_state_is_reset_before_the_installer_runs(self, mac_worker: Any) -> None:
+        """stop() is not guaranteed to run, and a surviving worker.json makes
+        get_worker_id adopt the previous worker's id."""
+        calls: list[str] = []
+        with (
+            patch.object(mod.sys, "platform", "darwin"),
+            patch.object(mac_worker, "_stage_file_mappings"),
+            patch.object(mac_worker, "_install_agent"),
+            patch.object(
+                mac_worker, "_reset_host_state", side_effect=lambda: calls.append("reset")
+            ),
+            patch.object(mac_worker, "_run_installer", side_effect=lambda: calls.append("install")),
+            patch.object(mac_worker, "_create_job_users"),
+            patch.object(mac_worker, "_write_impersonation_sudoers_rule"),
+            patch.object(mac_worker, "_write_agent_credentials"),
+            patch.object(mac_worker, "_configure_agent_environment"),
+            patch.object(mac_worker, "start_worker_service"),
+        ):
+            mac_worker.start()
+
+        assert calls == ["reset", "install"]
+
+    def test_start_worker_service_waits_via_the_stop_path(self, mac_worker: Any) -> None:
+        """Reusing stop_worker_service is what makes the wait raise on a lingering label;
+        an open-coded bootout here would let the installer's daemon satisfy the
+        `state = running` check."""
+        with (
+            patch.object(mac_worker, "stop_worker_service") as stop,
+            patch.object(mac_worker, "send_command", return_value=CommandResult(0, "")),
+            patch.object(mac_worker, "get_worker_id", return_value="worker-" + "0" * 32),
+        ):
+            mac_worker.start_worker_service()
+
+        stop.assert_called_once()
+
+    def test_bootstrap_failure_is_not_swallowed_by_the_retry_loop(self, mac_worker: Any) -> None:
+        """A bash for loop exits with the status of the last command in its body, so an
+        exhausted retry loop falls through as success unless a flag is checked."""
+        with (
+            patch.object(mac_worker, "stop_worker_service"),
+            patch.object(mac_worker, "send_command", return_value=CommandResult(0, "")) as send,
+            patch.object(mac_worker, "get_worker_id", return_value="worker-" + "0" * 32),
+        ):
+            mac_worker.start_worker_service()
+
+        cmd = self._commands(send)[0]
+        assert 'test "$bootstrapped" -eq 1' in cmd, "exhausted retries would pass silently"
+
+    def test_session_runtime_edit_rejects_a_duplicated_key(
+        self, worker_config: DeadlineWorkerConfiguration
+    ) -> None:
+        """Two session_runtime lines are a TOML parse error the agent reports only as a
+        refusal to start, and a presence check cannot see it."""
+        from dataclasses import replace
+
+        worker = mod.LocalMacWorker(configuration=replace(worker_config, session_runtime="python"))
+        with patch.object(
+            worker, "send_command", return_value=CommandResult(0, "")
+        ) as send_command:
+            worker._run_installer()
+
+        cmd = self._commands(send_command)[0]
+        assert "grep -c '^session_runtime = '" in cmd
+        assert "-eq 1" in cmd
 
     def test_start_requires_macos(self, mac_worker: Any) -> None:
         with (
