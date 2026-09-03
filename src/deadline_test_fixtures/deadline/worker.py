@@ -1369,6 +1369,7 @@ class LocalMacWorker(DeadlineWorker):
                 LOG.exception("Failed to stop the worker agent service; continuing cleanup")
 
         self._remove_impersonation_sudoers_rule()
+        self._reset_host_state()
 
         if not self.worker_id:
             LOG.info("No worker_id available, skipping worker cleanup")
@@ -1441,6 +1442,22 @@ class LocalMacWorker(DeadlineWorker):
             )
         except botocore.exceptions.ClientError:
             LOG.exception("Could not force the worker to STOPPED; attempting the delete anyway")
+
+    def _reset_host_state(self) -> None:
+        """Remove the per-worker files the next worker on this host must not inherit.
+
+        The EC2 workers get a fresh instance each time, so nothing carries over. Every
+        worker in a run shares this host, and the installer deliberately preserves an
+        existing `worker.toml`, so without this the next worker starts from the last
+        one's configuration and a stale `worker.json` points it at a deleted worker.
+
+        Runs after the worker id has been read, and best-effort: a host left slightly
+        dirty is a worse outcome than a teardown that stops before deleting the worker.
+        """
+        for path in ("/etc/amazon/deadline/worker.toml", "/var/lib/deadline/worker.json"):
+            result = self.send_command(f"rm -f {path}", quiet=True)
+            if result.exit_code != 0:
+                LOG.warning(f"Could not remove {path}: {result.stdout}")
 
     def send_command(self, command: str, *, quiet: bool = False) -> CommandResult:
         """Run a command on this host as root, via `sudo`.
@@ -1671,12 +1688,15 @@ class LocalMacWorker(DeadlineWorker):
 
         if config.session_runtime:
             _validate_session_runtime(config.session_runtime)
-            # The installer writes this setting commented out, so uncomment and
-            # set it. BSD sed requires an argument to -i, unlike GNU sed. sed
-            # exits 0 when nothing matched, so the grep below is what catches a
-            # worker left on the default runtime.
+            # The installer writes this setting commented out, but it preserves an
+            # existing worker.toml, so on a host that has already hosted a worker the
+            # line is present and uncommented. Matching `#?` covers both, which matters
+            # here and not on EC2 because every worker on this host shares one file.
+            # BSD sed requires an argument to -i, unlike GNU sed. sed exits 0 when
+            # nothing matched, so the grep below is what catches a worker left on the
+            # default runtime.
             cmds.append(
-                f"sed -i '' 's/^# session_runtime = .*/session_runtime = "
+                f"sed -i '' -E 's/^#? *session_runtime = .*/session_runtime = "
                 f'"{config.session_runtime}"/\' /etc/amazon/deadline/worker.toml'
             )
             cmds.append(
