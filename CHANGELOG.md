@@ -1,3 +1,7 @@
+## 0.18.22 (2026-09-08)
+
+### Bug Fixes
+* Fixed `LocalMacWorker` setup ordering so that job users are created after running the installer, preventing "Group not found" errors on fresh macOS runners. Also fixed the agent user being added to each job user's group on macOS. (#331)
 ## 0.18.21 (2026-09-01)
 
 ### Features
