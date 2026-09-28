@@ -1279,6 +1279,25 @@ touch "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}"
         return ami_ssm_param
 
 
+def _require_local_mac_worker_optin() -> None:
+    """Refuse to run LocalMacWorker unless the host is declared disposable.
+
+    Unlike the EC2 and Docker paths there is no instance or container between the suite and the
+    machine; see the class docstring for what start() changes.
+
+    Called from start(), not only from the fixtures: `worker` is an override point and the worker
+    agent's e2e suite overrides it, so a fixture-only gate misses the suite this class exists for.
+    raise, not assert -- this package is a pytest11 plugin, so `python -O` erases asserts, and a
+    gate against an irreversible change to someone's machine must not be erasable by a flag.
+    """
+    if os.environ.get("USE_LOCAL_MAC_WORKER", "").lower() != "true":
+        raise RuntimeError(
+            "LocalMacWorker installs the worker agent onto the host running the tests. Set "
+            "USE_LOCAL_MAC_WORKER=true to confirm this host is disposable; see the class "
+            "docstring for what it changes."
+        )
+
+
 @dataclass
 class LocalMacWorker(DeadlineWorker):
     """A Deadline worker running on the macOS host executing the tests.
@@ -1326,16 +1345,28 @@ class LocalMacWorker(DeadlineWorker):
 
     _agent_home: str | None = field(init=False, default=None)
 
+    # Set once start() clears every gate. stop() keys on it so a refused start(), whose teardown
+    # still calls stop(), cannot clean up a host it never wrote to.
+    _host_mutation_begun: bool = field(init=False, default=False)
+
     def start(self) -> None:
-        assert (
-            sys.platform == "darwin"
-        ), f"LocalMacWorker requires macOS, but sys.platform is {sys.platform!r}"
+        # raise, not assert: /etc/sudoers.d exists on Linux too, so under python -O an erased
+        # assert here would let a mis-pointed run take real sudoers writes on the wrong machine.
+        if sys.platform != "darwin":
+            raise RuntimeError(
+                f"LocalMacWorker requires macOS, but sys.platform is {sys.platform!r}"
+            )
+        _require_local_mac_worker_optin()
         # This worker configures and supervises the agent through its LaunchDaemon,
         # which --no-install-service tells the installer not to write. Reject it
         # here rather than failing later on a missing plist.
         assert (
             not self.configuration.no_install_service
         ), "LocalMacWorker does not support no_install_service: it manages the agent's LaunchDaemon."
+
+        # Every gate is cleared and the next call mutates the host, so from here stop() has
+        # something to clean up, including after a start() that fails midway.
+        self._host_mutation_begun = True
 
         # First, before anything slow or fallible. A session killed mid-run leaves both a
         # loaded daemon and its worker.json behind, and the installer reloads a daemon it
@@ -1365,6 +1396,14 @@ class LocalMacWorker(DeadlineWorker):
             self.start_worker_service()
 
     def stop(self) -> None:
+        # Clean up only what start() may have written. The paths below are not macOS-only --
+        # worker.toml, worker.json and the sudoers rule are where the real Linux agent keeps its
+        # own, and a Mac has a daemon under this same label -- so without this the teardown that
+        # follows a refused start() destroys the config that refusal existed to protect.
+        if not self._host_mutation_begun:
+            LOG.info("start() never began modifying this host, so there is nothing to stop")
+            return
+
         # Read the worker id before booting the daemon out. worker_id is unset when
         # start_service was false, and also when start_worker_service raised after
         # the agent had already registered; either way the record leaks if it is not

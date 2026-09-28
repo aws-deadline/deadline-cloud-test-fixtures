@@ -32,9 +32,11 @@ from .deadline.worker import (
     DeadlineWorkerConfiguration,
     DockerContainerWorker,
     EC2InstanceWorker,
+    LocalMacWorker,
     PipInstall,
     PosixInstanceBuildWorker,
     WindowsInstanceBuildWorker,
+    _require_local_mac_worker_optin,
 )
 from .job_attachment_manager import JobAttachmentManager
 from .models import (
@@ -367,6 +369,10 @@ def deadline_resources(
                         configuration={
                             "customerManaged": {
                                 "mode": "NO_SCALING",
+                                # Not derived per platform, macOS included: WIN2022 workers have
+                                # always joined a fleet declaring these literals and their suites
+                                # pass, so these values gate neither registration nor session
+                                # assignment on OS or architecture.
                                 "workerCapabilities": {
                                     "vCpuCount": {"min": 1},
                                     "memoryMiB": {"min": 1024},
@@ -534,16 +540,21 @@ def worker_config(
 
 @pytest.fixture(scope="session")
 def ec2_worker_type(request: pytest.FixtureRequest) -> Generator[type[DeadlineWorker], None, None]:
-    # Allows overriding the base EC2InstanceWorker type with another derived type.
+    # Allows overriding the base worker type with another derived type.
+    #
+    # MACOS yields LocalMacWorker, which is not an EC2 worker at all -- the name stays because it
+    # is the override point suites already use.
     operating_system = request.getfixturevalue("operating_system")
 
     if operating_system.name == "AL2023":
         yield PosixInstanceBuildWorker
     elif operating_system.name == "WIN2022":
         yield WindowsInstanceBuildWorker
+    elif operating_system.name == "MACOS":
+        yield LocalMacWorker
     else:
         raise ValueError(
-            'Invalid value provided for "operating_system", valid options are \'OperatingSystem("AL2023")\' or \'OperatingSystem("WIN2022")\'.'
+            'Invalid value provided for "operating_system", valid options are \'OperatingSystem("AL2023")\', \'OperatingSystem("WIN2022")\' or \'OperatingSystem("MACOS")\'.'
         )
 
 
@@ -551,7 +562,7 @@ def ec2_worker_type(request: pytest.FixtureRequest) -> Generator[type[DeadlineWo
 def worker(
     request: pytest.FixtureRequest,
     worker_config: DeadlineWorkerConfiguration,
-    ec2_worker_type: type[EC2InstanceWorker],
+    ec2_worker_type: type[DeadlineWorker],
 ) -> Generator[DeadlineWorker, None, None]:
     """
     Gets a DeadlineWorker for use in tests.
@@ -567,9 +578,26 @@ def worker(
         USE_DOCKER_WORKER: If set to "true", this fixture will create a Worker that runs in a local Docker container instead of an EC2 instance.
         KEEP_WORKER_AFTER_FAILURE: If set to "true", will not destroy the Worker when it fails. Useful for debugging. Default is "false"
 
+    On MACOS the agent is installed onto the host running the tests, so SUBNET_ID,
+    SECURITY_GROUP_ID, AMI_ID and the worker instance profile do not apply, and
+    USE_LOCAL_MAC_WORKER=true is required to confirm the host is disposable. Starting the worker
+    creates accounts and groups, writes a sudoers rule letting the agent user impersonate every
+    job user, grants it `shutdown -h now`, writes this process's AWS credentials to the agent
+    user's ~/.aws/credentials, and bootstraps a root LaunchDaemon.
+
+    KEEP_WORKER_AFTER_FAILURE leaves all of that in place on MACOS, to be removed by hand.
+
     Returns:
         DeadlineWorker: Instance of the DeadlineWorker class that can be used to interact with the Worker.
     """
+
+    operating_system = request.getfixturevalue("operating_system")
+
+    # Skipped, not ordered: falling through to Docker would report macos ids as passing against a
+    # Linux container. Skip rather than raise so the params Docker can serve still run, since one
+    # set of environment variables usually covers a suite parametrized over several.
+    if os.environ.get("USE_DOCKER_WORKER", "").lower() == "true" and operating_system.is_macos():
+        pytest.skip("USE_DOCKER_WORKER is set; the container does not run macOS")
 
     worker: DeadlineWorker
     if os.environ.get("USE_DOCKER_WORKER", "").lower() == "true":
@@ -577,7 +605,34 @@ def worker(
         worker = DockerContainerWorker(
             configuration=worker_config,
         )
+    elif operating_system.is_macos():
+        # Before the EC2 branch: there is no instance to place in a subnet, and its asserts below
+        # would fail on a host that is otherwise able to run the suite.
+        #
+        # start() enforces this too and cannot be bypassed; here it is just the clearer error.
+        _require_local_mac_worker_optin()
+        # Checked, not cast, so an EC2 type left in this override point is named here rather than
+        # failing on a missing keyword deep in __init__. isinstance first: this fixture never
+        # required a class, so a factory that used to work must not die on issubclass().
+        assert not isinstance(ec2_worker_type, type) or issubclass(
+            ec2_worker_type, LocalMacWorker
+        ), (
+            f"operating_system is MACOS but ec2_worker_type is {ec2_worker_type}; override it "
+            "with a LocalMacWorker subclass."
+        )
+        LOG.info("Creating local macOS worker")
+        worker = ec2_worker_type(
+            configuration=worker_config,
+            deadline_client=boto3.client("deadline"),
+        )
     else:
+        # Names the override mistake instead of failing on a missing keyword deep in __init__.
+        assert not isinstance(ec2_worker_type, type) or issubclass(
+            ec2_worker_type, EC2InstanceWorker
+        ), (
+            f"ec2_worker_type is {ec2_worker_type}, which is not an EC2InstanceWorker; the EC2 "
+            "path passes instance arguments its __init__ will not accept."
+        )
         LOG.info("Creating EC2 worker")
         ami_id = os.getenv("AMI_ID")
         subnet_id = os.getenv("SUBNET_ID")
@@ -688,6 +743,9 @@ def operating_system(request) -> OperatingSystem:
     if request.param == "linux":
         return OperatingSystem(name="AL2023")
     elif request.param == "macos":
+        # Not gated on USE_LOCAL_MAC_WORKER: this fixture also drives path mapping for suites
+        # that bring their own worker, and returning a value cannot mutate a host. `worker` and
+        # LocalMacWorker.start() gate the paths that install.
         return OperatingSystem(name="MACOS")
     else:
         return OperatingSystem(name="WIN2022")
