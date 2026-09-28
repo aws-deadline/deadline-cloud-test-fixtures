@@ -927,7 +927,12 @@ class TestLocalMacWorker:
     """
 
     @pytest.fixture
-    def mac_worker(self, worker_config: DeadlineWorkerConfiguration) -> Generator[Any, None, None]:
+    def mac_worker(
+        self, worker_config: DeadlineWorkerConfiguration, monkeypatch: pytest.MonkeyPatch
+    ) -> Generator[Any, None, None]:
+        # start() refuses without the opt-in; its own test covers that. These are about what
+        # start() does once it runs.
+        monkeypatch.setenv("USE_LOCAL_MAC_WORKER", "true")
         worker = mod.LocalMacWorker(configuration=worker_config, deadline_client=MagicMock())
 
         def no_subprocess(*args: Any, **kwargs: Any) -> Any:
@@ -1095,6 +1100,8 @@ class TestLocalMacWorker:
     def test_stop_always_boots_out_the_service(self, mac_worker: Any) -> None:
         """No flag tracks how far start() got: stop_worker_service treats an absent label
         as success, so a guard could only suppress a bootout that was correct."""
+        # stop() is a no-op until start() begins mutating; this test is about what follows.
+        mac_worker._host_mutation_begun = True
         with (
             patch.object(mac_worker, "send_command", return_value=CommandResult(1, "")),
             patch.object(mac_worker, "stop_worker_service") as stop,
@@ -1153,8 +1160,66 @@ class TestLocalMacWorker:
         assert "-eq 1" in cmd
 
     def test_start_requires_macos(self, mac_worker: Any) -> None:
+        # RuntimeError, not AssertionError: /etc/sudoers.d exists on Linux, so this guard has to
+        # survive python -O.
         with (
             patch.object(mod.sys, "platform", "linux"),
-            pytest.raises(AssertionError, match="requires macOS"),
+            pytest.raises(RuntimeError, match="requires macOS"),
+        ):
+            mac_worker.start()
+
+    @pytest.mark.parametrize(
+        ("platform", "optin"),
+        [
+            pytest.param("linux", "true", id="wrong-platform"),
+            pytest.param("darwin", None, id="no-optin"),
+        ],
+    )
+    def test_stop_is_a_noop_after_a_refused_start(
+        self, mac_worker: Any, monkeypatch: pytest.MonkeyPatch, platform: str, optin: Any
+    ) -> None:
+        """A refused start() wrote nothing, so the teardown that follows must clean nothing.
+
+        Otherwise the run refused because nobody declared the host disposable is the run that
+        mutates it on the way out. Nothing but the gates is patched, so the fixture's subprocess
+        trap is the assertion that neither call shelled out.
+        """
+        if optin is None:
+            monkeypatch.delenv("USE_LOCAL_MAC_WORKER", raising=False)
+        else:
+            monkeypatch.setenv("USE_LOCAL_MAC_WORKER", optin)
+        with patch.object(mod.sys, "platform", platform):
+            with pytest.raises(RuntimeError):
+                mac_worker.start()
+            mac_worker.stop()
+        mac_worker.deadline_client.delete_worker.assert_not_called()
+
+    def test_stop_cleans_up_once_start_has_begun_mutating(self, mac_worker: Any) -> None:
+        """The counterpart: a start() that cleared the gates and failed midway did write, so
+        stop() must still clean up after it."""
+        with (
+            patch.object(mod.sys, "platform", "darwin"),
+            patch.object(mac_worker, "stop_worker_service"),
+            patch.object(mac_worker, "_reset_host_state"),
+            patch.object(mac_worker, "_stage_file_mappings"),
+            patch.object(mac_worker, "_install_agent", side_effect=RuntimeError("pip failed")),
+            pytest.raises(RuntimeError, match="pip failed"),
+        ):
+            mac_worker.start()
+        assert mac_worker._host_mutation_begun
+
+    def test_start_refuses_without_the_disposable_host_optin(
+        self, mac_worker: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The gate the fixtures cannot guarantee: suites override `worker`, so this is the only
+        check every path to an install goes through.
+
+        Nothing but the platform is patched, so the fixture's subprocess trap doubles as the
+        assertion that the refusal fired before anything touched the host.
+        """
+        monkeypatch.delenv("USE_LOCAL_MAC_WORKER", raising=False)
+        with (
+            patch.object(mod.sys, "platform", "darwin"),
+            pytest.raises(RuntimeError, match="USE_LOCAL_MAC_WORKER"),
         ):
             mac_worker.start()
