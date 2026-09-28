@@ -1,3 +1,7 @@
+## 0.18.23 (2026-09-28)
+
+### Bug Fixes
+* Setting `OPERATING_SYSTEM=macos` now correctly selects the `LocalMacWorker` instead of raising a `ValueError`. Previously, although macOS support was added, the worker selection logic did not wire up the MACOS operating system variant, causing fixture setup to fail. (#333)
 ## 0.18.22 (2026-09-08)
 
 ### Bug Fixes
