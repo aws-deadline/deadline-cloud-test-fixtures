@@ -77,6 +77,66 @@ def test_something(double_worker: DoubleWorker) -> None:
     # etc.
 ```
 
+## DCC UI Test Components
+
+The standard package installation includes the dependencies needed to test a
+graphical submitter:
+
+```sh
+pip install deadline-cloud-test-fixtures
+```
+
+The package provides four independent building blocks:
+
+- `deadline_test_fixtures.deadline_mock`: an observable, scenario-driven
+  Deadline REST-JSON server. `MockDeadlineServerProcess` runs it outside the
+  pytest process so native accessibility waits cannot starve the server thread.
+- `deadline_test_fixtures.xa11y`: cross-platform accessibility application
+  discovery and reusable widget controls.
+- `deadline_test_fixtures.job_bundle`: conventional case directories and
+  structural bundle comparison with configurable normalization.
+- `deadline_test_fixtures.images`: render comparison by dimensions and pixel
+  tolerance.
+
+Each DCC remains responsible for launching its host application and opening its
+plugin. A typical offline test setup is:
+
+```py
+import os
+
+from deadline_test_fixtures.deadline_mock import (
+    MockDeadlineServerProcess,
+    build_mock_environment,
+    write_deadline_config,
+)
+
+with MockDeadlineServerProcess() as server:
+    backend = server.backend
+    assert backend is not None and server.base_url is not None
+    write_deadline_config(
+        tmp_path / "deadline.config",
+        farm_id=backend.farm_id,
+        queue_id=backend.queue_id,
+        job_history_dir=tmp_path / "job_history",
+    )
+    env = build_mock_environment(
+        os.environ,
+        deadline_endpoint_url=server.base_url,
+        config_path=tmp_path / "deadline.config",
+        home_dir=tmp_path / "home",
+    )
+    # Launch the DCC with env, then locate its accessibility application.
+```
+
+`find_accessibility_app` locates a DCC host or submitter dialog by process ID
+and an optional application-name prefix. Each DCC remains responsible for
+launching, monitoring, and terminating its host process.
+
+Deadline's service model injects a `management.` host prefix. A DCC subprocess
+must disable that injection or redirect `management.*` to loopback; the default
+`DEADLINE_CLOUD_MOCK_MODE=1` environment marker is provided for a test sidecar
+to enable that behavior.
+
 ## Telemetry
 
 This library collects telemetry data by default. Telemetry events contain non-personally-identifiable information that helps us understand how users interact with our software so we know what features our customers use, and/or what existing pain points are.
@@ -144,4 +204,3 @@ See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more inform
 ## License
 
 This project is licensed under the Apache-2.0 License.
-

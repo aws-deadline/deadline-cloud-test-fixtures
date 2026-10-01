@@ -1,13 +1,14 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 from __future__ import annotations
 
-import botocore.client
-import botocore.exceptions
 import json
 import logging
 import re
 from dataclasses import dataclass
 from typing import Literal
+
+import botocore.client
+import botocore.exceptions
 
 from ..util import clean_kwargs
 
@@ -61,7 +62,7 @@ class CfnStack:
                 waiter.wait(StackName=self.name)
                 LOG.info("Stack create complete")
             else:
-                LOG.exception(f"Unexpected error when attempting to update stack {self.name}: {e}")
+                LOG.exception(f"Unexpected error when attempting to update stack {self.name}")
                 raise
 
     def destroy(self, *, cfn_client: botocore.client.BaseClient) -> None:

@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-from typing import Generator
+from collections.abc import Generator
 from unittest.mock import patch
 
 import pytest

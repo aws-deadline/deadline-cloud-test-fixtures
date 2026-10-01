@@ -1,11 +1,13 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+from __future__ import annotations
+
 import logging
 import os
-from typing import Any, Optional
+from typing import Any
 
 from botocore.loaders import Loader
-from botocore.model import ServiceModel, OperationModel
+from botocore.model import OperationModel, ServiceModel
 
 LOG = logging.getLogger(__name__)
 
@@ -45,14 +47,12 @@ class DeadlineClient:
             if (
                 "workerCapabilities" not in customer_managed_members
                 and "workerRequirements" in customer_managed_members
+                and "customerManaged" in kwargs["configuration"]
+                and "workerCapabilities" in kwargs["configuration"]["customerManaged"]
             ):
-                if (
-                    "customerManaged" in kwargs["configuration"]
-                    and "workerCapabilities" in kwargs["configuration"]["customerManaged"]
-                ):
-                    kwargs["configuration"]["customerManaged"]["workerRequirements"] = kwargs[
-                        "configuration"
-                    ]["customerManaged"].pop("workerCapabilities")
+                kwargs["configuration"]["customerManaged"]["workerRequirements"] = kwargs[
+                    "configuration"
+                ]["customerManaged"].pop("workerCapabilities")
 
         return self._real_client.create_fleet(*args, **kwargs)
 
@@ -82,8 +82,8 @@ class DeadlineClient:
         return self._real_client.create_queue(*args, **kwargs)
 
     def create_queue_fleet_association(self, *args, **kwargs) -> Any:
-        create_queue_fleet_association_method_name: Optional[str]
-        create_queue_fleet_association_method: Optional[str]
+        create_queue_fleet_association_method_name: str | None
+        create_queue_fleet_association_method: str | None
 
         for create_queue_fleet_association_method_name in (
             "put_queue_fleet_association",
@@ -103,25 +103,22 @@ class DeadlineClient:
     def create_job(self, *args, **kwargs) -> Any:
         create_job_input_members = self._get_deadline_api_input_shape("CreateJob")
         # revert to old parameter names if old service model is used
-        if "maxRetriesPerTask" in kwargs:
-            if "maxErrorsPerTask" in create_job_input_members:
-                kwargs["maxErrorsPerTask"] = kwargs.pop("maxRetriesPerTask")
-        if "template" in kwargs:
-            if "jobTemplate" in create_job_input_members:
-                kwargs["jobTemplate"] = kwargs.pop("template")
-                kwargs["jobTemplateType"] = kwargs.pop("templateType")
-                if "parameters" in kwargs:
-                    kwargs["jobParameters"] = kwargs.pop("parameters")
-        if "targetTaskRunStatus" in kwargs:
-            if "initialState" in create_job_input_members:
-                kwargs["initialState"] = kwargs.pop("targetTaskRunStatus")
+        if "maxRetriesPerTask" in kwargs and "maxErrorsPerTask" in create_job_input_members:
+            kwargs["maxErrorsPerTask"] = kwargs.pop("maxRetriesPerTask")
+        if "template" in kwargs and "jobTemplate" in create_job_input_members:
+            kwargs["jobTemplate"] = kwargs.pop("template")
+            kwargs["jobTemplateType"] = kwargs.pop("templateType")
+            if "parameters" in kwargs:
+                kwargs["jobParameters"] = kwargs.pop("parameters")
+        if "targetTaskRunStatus" in kwargs and "initialState" in create_job_input_members:
+            kwargs["initialState"] = kwargs.pop("targetTaskRunStatus")
         if "priority" not in kwargs:
             kwargs["priority"] = 50
         return self._real_client.create_job(*args, **kwargs)
 
     def update_queue_fleet_association(self, *args, **kwargs) -> Any:
-        update_queue_fleet_association_method_name: Optional[str]
-        update_queue_fleet_association_method: Optional[str]
+        update_queue_fleet_association_method_name: str | None
+        update_queue_fleet_association_method: str | None
 
         for update_queue_fleet_association_method_name in (
             "update_queue_fleet_association",
@@ -154,7 +151,7 @@ class DeadlineClient:
             return api_model.input_shape.members
         return {}
 
-    def _get_deadline_api_model(self, api_name: str) -> Optional[OperationModel]:
+    def _get_deadline_api_model(self, api_name: str) -> OperationModel | None:
         """
         Given a string name of an API e.g. CreateJob, returns the OperationModel
         for that API from the service model.
@@ -167,7 +164,7 @@ class DeadlineClient:
             deadline_service_description["operations"][api_name], deadline_service_model
         )
 
-    def __getattr__(self, __name: str) -> Any:
+    def __getattr__(self, name: str, /) -> Any:
         """
         Respond to unknown method calls by calling the underlying _real_client
         If the underlying _real_client does not have a given method, an AttributeError
@@ -178,6 +175,6 @@ class DeadlineClient:
         """
 
         def method(*args, **kwargs):
-            return getattr(self._real_client, __name)(*args, **kwargs)
+            return getattr(self._real_client, name)(*args, **kwargs)
 
         return method

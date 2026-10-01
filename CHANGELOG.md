@@ -1,3 +1,54 @@
+## 0.18.23 (2026-09-28)
+
+### Bug Fixes
+* Setting `OPERATING_SYSTEM=macos` now correctly selects the `LocalMacWorker` instead of raising a `ValueError`. Previously, although macOS support was added, the worker selection logic did not wire up the MACOS operating system variant, causing fixture setup to fail. (#333)
+## 0.18.22 (2026-09-08)
+
+### Bug Fixes
+* Fixed `LocalMacWorker` setup ordering so that job users are created after running the installer, preventing "Group not found" errors on fresh macOS runners. Also fixed the agent user being added to each job user's group on macOS. (#331)
+## 0.18.21 (2026-09-01)
+
+### Features
+* Added `LocalMacWorker` for running macOS Deadline workers directly on the test host instead of provisioning a separate machine. This also adds a `MACOS` variant to `OperatingSystem`, enabling macOS-based test workflows. (#329)
+## 0.18.20 (2026-08-26)
+
+### Bug Fixes
+* Fixed GUI test fixtures to use the new "Save bundle as" button instead of the renamed "Export Bundle" button. (#322)
+## 0.18.19 (2026-08-18)
+## 0.18.18 (2026-07-28)
+
+### Features
+* Added `session_runtime` field to `DeadlineWorkerConfiguration`, allowing you to configure the OpenJD session runtime backend ("python", "rust", or "service-selected") when deploying workers in E2E tests. This is supported on both Linux and Windows workers. (`85ee7b0`)
+## 0.18.17 (2026-07-17)
+
+### Bug Fixes
+* Fixed an issue with threaded mock server startup that could cause test fixture initialization failures. (#303)
+## 0.18.16 (2026-07-17)
+
+### Features
+* Added test fixtures for GUI testing using xa11y, enabling automated accessibility-based GUI testing. (#301)
+## 0.18.15 (2026-07-07)
+
+### Features
+* Updated the default Python version for Windows worker agent to 3.13.14. (#296)
+## 0.18.14 (2026-06-30)
+
+### Bug Fixes
+* Fixed an issue where old job attachment queues were not being properly cleaned up during tests. (#280)
+## 0.18.13 (2026-06-15)
+
+### Bug Fixes
+* The configure command now retries once if it fails, improving reliability during test setup. (#282)
+## 0.18.12 (2026-05-26)
+
+### Bug Fixes
+* EC2 worker bootstrap pip install commands now include `--retries 10 --timeout 60` to handle transient CodeArtifact failures (e.g., 504 errors). This applies to both the pip upgrade step and the main install step in `PipInstall.install_command_for_linux` and `PipInstall.install_command_for_windows`. (#277)
+## 0.18.11 (2026-04-13)
+
+### Bug Fixes
+* Update Windows Python version for worker agent to Python 3.13.13 (#267) ([`50244ee`](https://github.com/aws-deadline/deadline-cloud-test-fixtures/commit/50244ee5ecbbd58458ddd2ebbdd0aebe7a62ec62))
+
+
 ## 0.18.10 (2026-01-22)
 
 
