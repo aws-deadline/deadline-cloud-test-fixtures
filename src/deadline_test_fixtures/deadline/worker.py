@@ -271,10 +271,12 @@ class EC2InstanceWorker(DeadlineWorker):
         self._setup_worker_agent()
 
     def stop(self) -> None:
-        LOG.info(f"Terminating EC2 instance {self.instance_id}")
-        self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
+        termination_already_requested = self.instance_id is None
+        if not termination_already_requested:
+            LOG.info(f"Terminating EC2 instance {self.instance_id}")
+            self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
 
-        self.instance_id = None
+            self.instance_id = None
 
         # Only attempt worker-related cleanup if worker_id exists
         if not self.worker_id:
@@ -283,7 +285,12 @@ class EC2InstanceWorker(DeadlineWorker):
 
         if not self.configuration.fleet.autoscaling:
             try:
-                self.wait_until_stopped()
+                if termination_already_requested:
+                    # The instance was already terminated by an earlier stop(), so check the
+                    # worker status once instead of waiting again.
+                    self.wait_until_stopped(max_checks=1, seconds_between_checks=0)
+                else:
+                    self.wait_until_stopped()
             except TimeoutError:
                 LOG.warning(
                     f"{self.worker_id} did not transition to a STOPPED status, forcibly stopping..."
