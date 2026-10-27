@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import socket
 from contextlib import closing
+from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -67,6 +69,22 @@ def test_http_server_serves_submitter_resources_and_records_calls(mock_server):
         "ListQueueEnvironments": 1,
     }
     assert backend.unmatched_requests == []
+
+
+def test_http_server_starts_and_serves_without_reverse_dns():
+    backend = MockDeadlineBackend(MockDeadlineScenario(response_delay_s=0))
+    with patch.object(socket, "getfqdn", side_effect=AssertionError("unexpected DNS lookup")):
+        server, endpoint_url, _ = start_server(backend)
+    try:
+        assert server.server_address[0] == server.server_name == "127.0.0.1"
+        assert server.server_port == server.server_address[1]
+        assert endpoint_url == f"http://127.0.0.1:{server.server_port}"
+        assert _client(endpoint_url).list_farms()["farms"][0]["farmId"] == backend.farm_id
+        assert backend.call_counts == {"ListFarms": 1}
+        assert backend.unmatched_requests == []
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def test_http_server_records_unmatched_requests(mock_server):
