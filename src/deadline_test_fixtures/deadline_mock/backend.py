@@ -12,6 +12,7 @@ import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from socketserver import TCPServer
 from typing import Any, Callable, ClassVar
 from urllib.parse import parse_qs, urlparse
 
@@ -416,6 +417,17 @@ def _make_handler(
     return Handler
 
 
+class _LoopbackHTTPServer(ThreadingHTTPServer):
+    """Bind the offline server without HTTPServer's reverse-DNS lookup."""
+
+    def server_bind(self) -> None:
+        if self.server_address[0] != "127.0.0.1":
+            raise ValueError("The offline mock must bind to IPv4 loopback")
+        TCPServer.server_bind(self)
+        self.server_name = "127.0.0.1"
+        self.server_port = int(self.server_address[1])
+
+
 def start_server(
     backend: MockDeadlineBackend,
     port: int = 0,
@@ -423,7 +435,7 @@ def start_server(
     """Serve a mock Deadline backend over REST-JSON."""
     routes = _discover_routes(backend)
     validator = _ResponseValidator() if backend.validate_responses else None
-    server = ThreadingHTTPServer(
+    server = _LoopbackHTTPServer(
         ("127.0.0.1", port),
         _make_handler(routes, validator, backend),
     )
