@@ -25,7 +25,14 @@ from ..models import (
     PipInstall,
     PosixSessionUser,
 )
-from ..util import call_api, is_instance_not_ready, retry_with_predicate, wait_for
+from ..util import (
+    call_api,
+    is_concurrent_modification,
+    is_instance_not_ready,
+    is_worker_status_conflict,
+    retry_with_predicate,
+    wait_for,
+)
 from .resources import CloudWatchLogEvent, Fleet, WorkerLog
 
 if TYPE_CHECKING:
@@ -286,8 +293,8 @@ class EC2InstanceWorker(DeadlineWorker):
         if not self.configuration.fleet.autoscaling:
             try:
                 if termination_already_requested:
-                    # The instance was already terminated by an earlier stop(), so check the
-                    # worker status once instead of waiting again.
+                    # Termination was already requested by an earlier stop(), so check the worker
+                    # status once instead of waiting again.
                     self.wait_until_stopped(max_checks=1, seconds_between_checks=0)
                 else:
                     self.wait_until_stopped()
@@ -297,23 +304,35 @@ class EC2InstanceWorker(DeadlineWorker):
                 )
                 self.set_stopped_status()
 
+            self.delete()
+
+    def delete(self) -> None:
+        try:
+            self._delete_worker()
+        except botocore.exceptions.ClientError as e:
+            if not (is_worker_status_conflict(e) or is_concurrent_modification(e)):
+                LOG.exception("Failed to delete worker")
+                raise
+            # The worker is not in a deletable status, or its status changed while the delete
+            # was in flight. Check once, force STOPPED if needed, then try the delete once more.
+            LOG.info(f"{self.worker_id} is not deletable yet, re-checking its status")
             try:
-                self.delete()
+                self.wait_until_stopped(max_checks=1, seconds_between_checks=0)
+            except TimeoutError:
+                self.set_stopped_status()
+            try:
+                self._delete_worker()
             except botocore.exceptions.ClientError:
                 LOG.exception("Failed to delete worker")
                 raise
 
-    def delete(self):
-        try:
-            self.deadline_client.delete_worker(
-                farmId=self.configuration.farm_id,
-                fleetId=self.configuration.fleet.id,
-                workerId=self.worker_id,
-            )
-            LOG.info(f"{self.worker_id} has been deleted from {self.configuration.fleet.id}")
-        except botocore.exceptions.ClientError:
-            LOG.exception("Failed to delete worker")
-            raise
+    def _delete_worker(self) -> None:
+        self.deadline_client.delete_worker(
+            farmId=self.configuration.farm_id,
+            fleetId=self.configuration.fleet.id,
+            workerId=self.worker_id,
+        )
+        LOG.info(f"{self.worker_id} has been deleted from {self.configuration.fleet.id}")
 
     def wait_until_stopped(
         self, *, max_checks: int = 25, seconds_between_checks: float = 5
@@ -345,18 +364,20 @@ class EC2InstanceWorker(DeadlineWorker):
         else:
             raise TimeoutError
 
-    def set_stopped_status(self):
+    # 20 attempts with 30 s between them (about 10 to 11 min with jitter) cover the window in which
+    # the service keeps reporting a conflict while the farm is being updated, before it switches to
+    # a server error.
+    @retry_with_predicate(
+        max_attempts=20, delay=30, backoff=1, jitter=0.2, predicate=is_concurrent_modification
+    )
+    def set_stopped_status(self) -> None:
         LOG.info(f"Setting {self.worker_id} to STOPPED status")
-        try:
-            self.deadline_client.update_worker(
-                farmId=self.configuration.farm_id,
-                fleetId=self.configuration.fleet.id,
-                workerId=self.worker_id,
-                status="STOPPED",
-            )
-        except botocore.exceptions.ClientError:
-            LOG.exception("Failed to update worker status")
-            raise
+        self.deadline_client.update_worker(
+            farmId=self.configuration.farm_id,
+            fleetId=self.configuration.fleet.id,
+            workerId=self.worker_id,
+            status="STOPPED",
+        )
 
     def _get_worker_logs(self) -> WorkerLogConfig | None:
         """Get the log group and log stream for the worker. Retain the API structure"""

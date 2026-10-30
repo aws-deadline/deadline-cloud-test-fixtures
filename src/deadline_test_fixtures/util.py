@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import random
 from time import sleep
 from typing import Any, Callable
 
@@ -42,7 +43,25 @@ def is_instance_not_ready(e: Exception):
     )
 
 
-def retry_with_predicate(max_attempts=3, delay=1, backoff=2, predicate=None):
+def is_concurrent_modification(e: Exception) -> bool:
+    # Returned when the request lost a race with another write to the same resource; callers retry.
+    return (
+        isinstance(e, botocore.exceptions.ClientError)
+        and e.response["Error"]["Code"] == "ConflictException"
+        and e.response.get("reason") == "CONCURRENT_MODIFICATION"
+    )
+
+
+def is_worker_status_conflict(e: Exception) -> bool:
+    # Returned when the worker is not in a status that allows the requested operation.
+    return (
+        isinstance(e, botocore.exceptions.ClientError)
+        and e.response["Error"]["Code"] == "ConflictException"
+        and e.response.get("reason") == "STATUS_CONFLICT"
+    )
+
+
+def retry_with_predicate(max_attempts=3, delay=1, backoff=2, predicate=None, jitter=0.0):
     """
     Retry decorator with configurable parameters and exception predicate.
 
@@ -52,6 +71,8 @@ def retry_with_predicate(max_attempts=3, delay=1, backoff=2, predicate=None):
         backoff (float): Backoff multiplier (e.g. 2 means delay doubles each retry)
         predicate (callable): Function that takes an exception and returns True if retry should happen
                              If None, all exceptions will trigger a retry
+        jitter (float): Fraction of the current delay added as a random extra wait, so retries
+                        from several workers do not line up. 0 means no extra wait.
 
     Returns:
         The decorated function result if successful
@@ -76,14 +97,18 @@ def retry_with_predicate(max_attempts=3, delay=1, backoff=2, predicate=None):
                     if not should_retry or attempts >= max_attempts:
                         raise
 
+                    sleep_s = current_delay
+                    if jitter > 0:
+                        sleep_s += random.uniform(0, jitter * current_delay)
+
                     # Log the retry attempt
                     LOG.warning(
                         f"Retry {attempts}/{max_attempts} for {func.__name__} due to {e.__class__.__name__}: {e!s}. "
-                        f"Retrying in {current_delay} seconds..."
+                        f"Retrying in {sleep_s} seconds..."
                     )
 
                     # Wait before retrying
-                    sleep(current_delay)
+                    sleep(sleep_s)
 
                     # Increase the delay for the next attempt
                     current_delay *= backoff
