@@ -1,4 +1,8 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+from __future__ import annotations
+
+import dataclasses
 import json
 import os
 import pathlib
@@ -25,6 +29,7 @@ from deadline_test_fixtures import (
     S3Object,
     WindowsInstanceBuildWorker,
 )
+from deadline_test_fixtures import util as util_mod
 from deadline_test_fixtures.deadline import worker as mod
 
 
@@ -402,6 +407,434 @@ class TestPosixInstanceBuildWorker:
         instance = TestPosixInstanceBuildWorker.describe_instance(instance_id)
         assert instance["State"]["Name"] == "terminated"
         assert worker.instance_id is None
+
+    @pytest.fixture
+    def non_autoscaling_worker(
+        self, worker: PosixInstanceBuildWorker, worker_config: DeadlineWorkerConfiguration
+    ) -> PosixInstanceBuildWorker:
+        worker.configuration = dataclasses.replace(
+            worker_config,
+            fleet=dataclasses.replace(worker_config.fleet, autoscaling=False),
+        )
+        worker.worker_id = "worker-7c3377ec9eba444bb51cc7da18463081"
+        worker.instance_id = "i-0123456789abcdef0"
+        return worker
+
+    @staticmethod
+    def conflict_error(
+        operation_name: str, reason: str | None = "CONCURRENT_MODIFICATION"
+    ) -> ClientError:
+        response: dict[str, Any] = {
+            "Error": {"Code": "ConflictException", "Message": "Worker is in a conflicting state"}
+        }
+        if reason is not None:
+            response["reason"] = reason
+        return ClientError(response, operation_name)  # type: ignore[arg-type]
+
+    @staticmethod
+    def client_error(code: str, operation_name: str) -> ClientError:
+        return ClientError({"Error": {"Code": code, "Message": "Request failed"}}, operation_name)
+
+    def test_stop_graceful_stop_deletes_worker(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        instance_id = worker.instance_id
+        with (
+            patch.object(worker.ec2_client, "terminate_instances") as mock_terminate,
+            patch.object(
+                worker.deadline_client, "get_worker", return_value={"status": "STOPPED"}
+            ) as mock_get_worker,
+            patch.object(worker.deadline_client, "update_worker") as mock_update_worker,
+            patch.object(worker.deadline_client, "delete_worker") as mock_delete_worker,
+        ):
+            # WHEN
+            worker.stop()
+
+        # THEN
+        mock_terminate.assert_called_once_with(InstanceIds=[instance_id])
+        assert worker.instance_id is None
+        mock_get_worker.assert_called_once()
+        mock_update_worker.assert_not_called()
+        mock_delete_worker.assert_called_once()
+
+    def test_stop_raises_when_update_worker_conflicts(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        instance_id = worker.instance_id
+        conflict = self.conflict_error("UpdateWorker")
+        with (
+            patch.object(worker.ec2_client, "terminate_instances") as mock_terminate,
+            patch.object(
+                worker.deadline_client, "get_worker", return_value={"status": "NOT_RESPONDING"}
+            ) as mock_get_worker,
+            patch.object(
+                worker.deadline_client, "update_worker", side_effect=[conflict] * 20
+            ) as mock_update_worker,
+            patch.object(worker.deadline_client, "delete_worker") as mock_delete_worker,
+            patch.object(mod.time, "sleep"),
+            patch.object(util_mod, "sleep"),
+            # WHEN
+            pytest.raises(ClientError) as raised,
+        ):
+            worker.stop()
+
+        # THEN
+        assert raised.value is conflict
+        mock_terminate.assert_called_once_with(InstanceIds=[instance_id])
+        assert worker.instance_id is None
+        assert mock_get_worker.call_count == 25
+        assert mock_update_worker.call_count == 20
+        mock_delete_worker.assert_not_called()
+
+    def test_stop_retry_after_delete_worker_failure_skips_termination(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        instance_id = worker.instance_id
+        with (
+            patch.object(worker.ec2_client, "terminate_instances") as mock_terminate,
+            patch.object(
+                worker.deadline_client, "get_worker", return_value={"status": "NOT_RESPONDING"}
+            ) as mock_get_worker,
+            patch.object(worker.deadline_client, "update_worker") as mock_update_worker,
+            patch.object(
+                worker.deadline_client,
+                "delete_worker",
+                side_effect=[self.client_error("AccessDeniedException", "DeleteWorker"), {}],
+            ) as mock_delete_worker,
+            patch.object(mod.time, "sleep") as mock_sleep,
+        ):
+            with pytest.raises(ClientError):
+                worker.stop()
+            mock_get_worker.reset_mock()
+            mock_update_worker.reset_mock()
+            mock_sleep.reset_mock()
+
+            # WHEN
+            worker.stop()
+
+        # THEN
+        mock_terminate.assert_called_once_with(InstanceIds=[instance_id])
+        mock_get_worker.assert_called_once()
+        # The retry must not wait between status checks.
+        assert all(call.args == (0,) for call in mock_sleep.call_args_list)
+        mock_update_worker.assert_called_once_with(
+            farmId=worker.configuration.farm_id,
+            fleetId=worker.configuration.fleet.id,
+            workerId=worker.worker_id,
+            status="STOPPED",
+        )
+        assert mock_delete_worker.call_count == 2
+        mock_delete_worker.assert_called_with(
+            farmId=worker.configuration.farm_id,
+            fleetId=worker.configuration.fleet.id,
+            workerId=worker.worker_id,
+        )
+
+    def test_stop_retries_delete_once_when_worker_not_deletable_and_already_stopped(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        instance_id = worker.instance_id
+        with (
+            patch.object(worker.ec2_client, "terminate_instances") as mock_terminate,
+            patch.object(
+                worker.deadline_client, "get_worker", return_value={"status": "STOPPED"}
+            ) as mock_get_worker,
+            patch.object(worker.deadline_client, "update_worker") as mock_update_worker,
+            patch.object(
+                worker.deadline_client,
+                "delete_worker",
+                side_effect=[self.conflict_error("DeleteWorker", reason="STATUS_CONFLICT"), {}],
+            ) as mock_delete_worker,
+        ):
+            # WHEN
+            worker.stop()
+
+        # THEN
+        mock_terminate.assert_called_once_with(InstanceIds=[instance_id])
+        # Once while waiting for STOPPED, once when re-checking before the second delete.
+        assert mock_get_worker.call_count == 2
+        mock_update_worker.assert_not_called()
+        assert mock_delete_worker.call_count == 2
+        mock_delete_worker.assert_called_with(
+            farmId=worker.configuration.farm_id,
+            fleetId=worker.configuration.fleet.id,
+            workerId=worker.worker_id,
+        )
+
+    def test_set_stopped_status_retries_concurrent_modification(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        conflict = self.conflict_error("UpdateWorker")
+        with (
+            patch.object(
+                worker.deadline_client, "update_worker", side_effect=[conflict, conflict, {}]
+            ) as mock_update_worker,
+            patch.object(util_mod, "sleep") as mock_util_sleep,
+        ):
+            # WHEN
+            worker.set_stopped_status()
+
+        # THEN
+        assert mock_update_worker.call_count == 3
+        assert mock_util_sleep.call_count == 2
+        for sleep_call in mock_util_sleep.call_args_list:
+            assert 30 <= sleep_call.args[0] <= 36
+
+    def test_set_stopped_status_gives_up_after_budget(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        conflict = self.conflict_error("UpdateWorker")
+        with (
+            patch.object(
+                worker.deadline_client, "update_worker", side_effect=[conflict] * 20
+            ) as mock_update_worker,
+            patch.object(util_mod, "sleep"),
+            # WHEN
+            pytest.raises(ClientError) as raised,
+        ):
+            worker.set_stopped_status()
+
+        # THEN
+        assert raised.value is conflict
+        assert mock_update_worker.call_count == 20
+
+    def test_set_stopped_status_succeeds_on_last_attempt(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        conflict = self.conflict_error("UpdateWorker")
+        with (
+            patch.object(
+                worker.deadline_client, "update_worker", side_effect=[conflict] * 19 + [{}]
+            ) as mock_update_worker,
+            patch.object(util_mod, "sleep") as mock_util_sleep,
+        ):
+            # WHEN
+            worker.set_stopped_status()
+
+        # THEN
+        assert mock_update_worker.call_count == 20
+        assert mock_util_sleep.call_count == 19
+        for sleep_call in mock_util_sleep.call_args_list:
+            assert 30 <= sleep_call.args[0] <= 36
+
+    def test_set_stopped_status_does_not_retry_status_conflict(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        conflict = self.conflict_error("UpdateWorker", reason="STATUS_CONFLICT")
+        with (
+            patch.object(
+                worker.deadline_client, "update_worker", side_effect=conflict
+            ) as mock_update_worker,
+            patch.object(util_mod, "sleep") as mock_util_sleep,
+            # WHEN
+            pytest.raises(ClientError) as raised,
+        ):
+            worker.set_stopped_status()
+
+        # THEN
+        assert raised.value is conflict
+        mock_update_worker.assert_called_once()
+        mock_util_sleep.assert_not_called()
+
+    def test_set_stopped_status_does_not_retry_conflict_without_reason(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        conflict = self.conflict_error("UpdateWorker", reason=None)
+        with (
+            patch.object(
+                worker.deadline_client, "update_worker", side_effect=conflict
+            ) as mock_update_worker,
+            patch.object(util_mod, "sleep") as mock_util_sleep,
+            # WHEN
+            pytest.raises(ClientError) as raised,
+        ):
+            worker.set_stopped_status()
+
+        # THEN
+        assert raised.value is conflict
+        mock_update_worker.assert_called_once()
+        mock_util_sleep.assert_not_called()
+
+    def test_delete_retries_once_when_worker_not_deletable_and_not_stopped(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        with (
+            patch.object(
+                worker.deadline_client, "get_worker", return_value={"status": "NOT_RESPONDING"}
+            ),
+            patch.object(worker.deadline_client, "update_worker") as mock_update_worker,
+            patch.object(
+                worker.deadline_client,
+                "delete_worker",
+                side_effect=[self.conflict_error("DeleteWorker", reason="STATUS_CONFLICT"), {}],
+            ) as mock_delete_worker,
+        ):
+            # WHEN
+            worker.delete()
+
+        # THEN
+        mock_update_worker.assert_called_once_with(
+            farmId=worker.configuration.farm_id,
+            fleetId=worker.configuration.fleet.id,
+            workerId=worker.worker_id,
+            status="STOPPED",
+        )
+        assert mock_delete_worker.call_count == 2
+        mock_delete_worker.assert_called_with(
+            farmId=worker.configuration.farm_id,
+            fleetId=worker.configuration.fleet.id,
+            workerId=worker.worker_id,
+        )
+
+    def test_delete_raises_when_worker_still_not_deletable(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        conflict = self.conflict_error("DeleteWorker", reason="STATUS_CONFLICT")
+        with (
+            patch.object(worker.deadline_client, "get_worker", return_value={"status": "STOPPED"}),
+            patch.object(worker.deadline_client, "update_worker") as mock_update_worker,
+            patch.object(
+                worker.deadline_client, "delete_worker", side_effect=[conflict, conflict]
+            ) as mock_delete_worker,
+            # WHEN
+            pytest.raises(ClientError) as raised,
+        ):
+            worker.delete()
+
+        # THEN
+        assert raised.value is conflict
+        assert mock_delete_worker.call_count == 2
+        mock_update_worker.assert_not_called()
+
+    def test_delete_recovers_when_status_changed_during_delete(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        with (
+            patch.object(
+                worker.deadline_client, "get_worker", return_value={"status": "STARTED"}
+            ) as mock_get_worker,
+            patch.object(worker.deadline_client, "update_worker") as mock_update_worker,
+            patch.object(
+                worker.deadline_client,
+                "delete_worker",
+                side_effect=[self.conflict_error("DeleteWorker"), {}],
+            ) as mock_delete_worker,
+            patch.object(mod.time, "sleep"),
+            patch.object(util_mod, "sleep") as mock_util_sleep,
+        ):
+            # WHEN
+            worker.delete()
+
+        # THEN
+        mock_get_worker.assert_called_once()
+        mock_update_worker.assert_called_once_with(
+            farmId=worker.configuration.farm_id,
+            fleetId=worker.configuration.fleet.id,
+            workerId=worker.worker_id,
+            status="STOPPED",
+        )
+        assert mock_delete_worker.call_count == 2
+        mock_delete_worker.assert_called_with(
+            farmId=worker.configuration.farm_id,
+            fleetId=worker.configuration.fleet.id,
+            workerId=worker.worker_id,
+        )
+        mock_util_sleep.assert_not_called()
+
+    def test_delete_raises_when_second_delete_fails_after_recovery(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        first = self.conflict_error("DeleteWorker")
+        second = self.conflict_error("DeleteWorker")
+        with (
+            patch.object(worker.deadline_client, "get_worker", return_value={"status": "STOPPED"}),
+            patch.object(worker.deadline_client, "update_worker") as mock_update_worker,
+            patch.object(
+                worker.deadline_client, "delete_worker", side_effect=[first, second]
+            ) as mock_delete_worker,
+            # WHEN
+            pytest.raises(ClientError) as raised,
+        ):
+            worker.delete()
+
+        # THEN
+        assert raised.value is second
+        mock_update_worker.assert_not_called()
+        assert mock_delete_worker.call_count == 2
+
+    def test_delete_does_not_retry_when_forcing_stopped_fails(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        update_error = self.conflict_error("UpdateWorker", reason="STATUS_CONFLICT")
+        with (
+            patch.object(
+                worker.deadline_client, "get_worker", return_value={"status": "NOT_RESPONDING"}
+            ),
+            patch.object(worker.deadline_client, "update_worker", side_effect=update_error),
+            patch.object(
+                worker.deadline_client,
+                "delete_worker",
+                side_effect=self.conflict_error("DeleteWorker", reason="STATUS_CONFLICT"),
+            ) as mock_delete_worker,
+            patch.object(util_mod, "sleep"),
+            # WHEN
+            pytest.raises(ClientError) as raised,
+        ):
+            worker.delete()
+
+        # THEN
+        assert raised.value is update_error
+        assert mock_delete_worker.call_count == 1
+
+    def test_stop_without_instance_or_worker_does_nothing(
+        self, non_autoscaling_worker: PosixInstanceBuildWorker
+    ) -> None:
+        # GIVEN
+        worker = non_autoscaling_worker
+        worker.instance_id = None
+        worker.worker_id = None
+        with (
+            patch.object(worker.ec2_client, "terminate_instances") as mock_terminate,
+            patch.object(worker.deadline_client, "get_worker") as mock_get_worker,
+            patch.object(worker.deadline_client, "update_worker") as mock_update_worker,
+            patch.object(worker.deadline_client, "delete_worker") as mock_delete_worker,
+        ):
+            # WHEN
+            worker.stop()
+
+        # THEN
+        mock_terminate.assert_not_called()
+        mock_get_worker.assert_not_called()
+        mock_update_worker.assert_not_called()
+        mock_delete_worker.assert_not_called()
 
     class TestSendCommand:
         def test_sends_command(self, worker: PosixInstanceBuildWorker) -> None:
