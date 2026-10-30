@@ -1,3 +1,7 @@
+## 0.18.24 (2026-10-28)
+
+### Bug Fixes
+* The offline Deadline Cloud mock server no longer does a reverse DNS lookup when it starts. On macOS runners, that lookup could trigger a local-network privacy dialog that blocked integration tests. The mock server now also refuses to bind to non-loopback addresses. (#348)
 ## 0.18.23 (2026-09-28)
 
 ### Bug Fixes
