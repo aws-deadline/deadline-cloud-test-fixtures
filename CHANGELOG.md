@@ -1,3 +1,7 @@
+## 0.18.25 (2026-11-02)
+
+### Bug Fixes
+* Fixed `EC2InstanceWorker.stop()` so it can be retried safely. A retry no longer fails with `ParamValidationError` after the instance was already terminated, and it now retries the status update when the service returns a `ConflictException` such as `CONCURRENT_MODIFICATION`. Before this fix, teardown could leave worker records behind in the NOT_RESPONDING state. (#345)
 ## 0.18.24 (2026-10-28)
 
 ### Bug Fixes
