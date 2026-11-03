@@ -137,6 +137,33 @@ must disable that injection or redirect `management.*` to loopback; the default
 `DEADLINE_CLOUD_MOCK_MODE=1` environment marker is provided for a test sidecar
 to enable that behavior.
 
+### Testing submission
+
+The mock also serves `CreateJob` and `GetJob`, so a test can press Submit and
+assert on what the submitter sent. Use a queue without job attachment settings:
+the Deadline client only hashes and uploads attachments to S3 (which the mock does
+not serve) when the queue has them.
+
+```py
+from deadline_test_fixtures.deadline_mock import (
+    MockDeadlineScenario,
+    MockDeadlineServerProcess,
+)
+
+with MockDeadlineServerProcess(MockDeadlineScenario.without_job_attachments()) as server:
+    # ... launch the DCC, drive the submitter, press Submit ...
+    (job,) = server.backend.resources["jobs"]
+    assert job["lifecycleStatus"] == "CREATE_COMPLETE"
+    template = job["template"]  # the submitted template text, plus templateType
+    parameters = job["parameters"]  # e.g. {"Frames": {"string": "1-10"}}
+```
+
+Each job holds the full `CreateJob` request with the fields the service assigns
+(`jobId`, `name`, `lifecycleStatus`, ...). Like the service, `CreateJob` rejects a
+template that is not a valid Open Job Description job template, and parameter
+values that neither the template nor the queue's environment templates accept.
+Pass `validate_job_templates=False` to the scenario to skip that check.
+
 ## Telemetry
 
 This library collects telemetry data by default. Telemetry events contain non-personally-identifiable information that helps us understand how users interact with our software so we know what features our customers use, and/or what existing pain points are.
