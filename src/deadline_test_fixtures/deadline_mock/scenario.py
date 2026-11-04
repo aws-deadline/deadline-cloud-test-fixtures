@@ -56,8 +56,17 @@ class MockDeadlineScenario:
     """Resources returned by :class:`MockDeadlineBackend`.
 
     The default scenario covers the read operations used while a Deadline
-    submitter opens and exports a job bundle. Consumers can supply queue
-    environments or storage profiles without implementing another HTTP mock.
+    submitter opens and exports a job bundle, plus ``CreateJob``/``GetJob`` for
+    submitting one. Consumers can supply queue environments or storage profiles
+    without implementing another HTTP mock.
+
+    The default queue has job attachment settings, so a submission that references
+    any files would hash and upload them to S3, which the mock does not serve. Use
+    :meth:`without_job_attachments` for tests that press Submit.
+
+    ``validate_job_templates`` makes ``CreateJob`` reject what the service would:
+    a template that is not a valid Open Job Description job template, or parameter
+    values that the template and the queue's environment templates do not accept.
     """
 
     farm: Mapping[str, Any] = field(default_factory=_default_farm)
@@ -65,6 +74,21 @@ class MockDeadlineScenario:
     queue_environments: tuple[Mapping[str, Any], ...] = ()
     storage_profiles: tuple[Mapping[str, Any], ...] = ()
     response_delay_s: float = 0.0
+    validate_job_templates: bool = True
+
+    @classmethod
+    def without_job_attachments(cls, **kwargs: Any) -> MockDeadlineScenario:
+        """Return a scenario whose queue has no job attachment settings.
+
+        The Deadline client only hashes and uploads job attachments when the queue
+        has ``jobAttachmentSettings``, so submitting to this queue goes straight to
+        ``CreateJob`` with no S3 traffic. Other fields are passed through; to
+        customize the queue as well, pass your own ``queue`` to the constructor and
+        leave out ``jobAttachmentSettings``.
+        """
+        queue = _default_queue()
+        del queue["jobAttachmentSettings"]
+        return cls(queue=queue, **kwargs)
 
     @property
     def farm_id(self) -> str:
@@ -102,4 +126,5 @@ class MockDeadlineScenario:
             queue_environments=tuple(value.get("queue_environments", ())),
             storage_profiles=tuple(value.get("storage_profiles", ())),
             response_delay_s=float(value.get("response_delay_s", 0.0)),
+            validate_job_templates=bool(value.get("validate_job_templates", True)),
         )

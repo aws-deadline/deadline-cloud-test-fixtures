@@ -45,6 +45,8 @@ dependencies = [
   "numpy >= 1.23",
   "Pillow >= 10.0",
   "openjd-cli >= 0.7",
+  # Imported directly by the mock Deadline service to validate CreateJob templates.
+  "openjd-model >= 0.7",
 ]
 
 [project.urls]

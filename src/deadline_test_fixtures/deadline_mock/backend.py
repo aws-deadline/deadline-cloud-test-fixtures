@@ -10,6 +10,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
@@ -20,8 +21,17 @@ import botocore.session
 from botocore.exceptions import ClientError
 from botocore.model import ServiceModel
 from botocore.validate import ParamValidator
+from openjd.model import (
+    DocumentType,
+    ParameterValue,
+    ParameterValueType,
+    create_job,
+    decode_environment_template,
+    decode_job_template,
+    document_string_to_object,
+)
 
-from .scenario import MockDeadlineScenario
+from .scenario import _FAKE_PRINCIPAL, MockDeadlineScenario
 
 API_PREFIX = "/2023-10-12"
 ADMIN_STATE_PATH = "/__deadline_test_fixtures__/state"
@@ -29,6 +39,14 @@ ADMIN_RESET_PATH = "/__deadline_test_fixtures__/reset"
 
 _INT_QUERY_PARAMS = {"maxResults", "itemOffset", "pageSize"}
 _MAX_BODY_BYTES = 10 * 1024 * 1024
+
+# CreateJob's JobParameter union members, mapped to Open Job Description value types.
+_PARAMETER_VALUE_TYPES = {
+    "string": ParameterValueType.STRING,
+    "path": ParameterValueType.PATH,
+    "int": ParameterValueType.INT,
+    "float": ParameterValueType.FLOAT,
+}
 
 
 def route(method: str, path: str, operation: str) -> Callable:
@@ -58,6 +76,38 @@ def _resource_not_found(resource_type: str, resource_id: str, operation: str) ->
     )
 
 
+def _validation_exception(message: str, operation: str) -> ClientError:
+    return ClientError({"Error": {"Code": "ValidationException", "Message": message}}, operation)
+
+
+def _parse_document(document: str, document_type: str | None) -> dict[str, Any]:
+    """Parse a CreateJob or queue environment template string; raises ValueError."""
+    return document_string_to_object(
+        document=document,
+        document_type=DocumentType.JSON if document_type == "JSON" else DocumentType.YAML,
+    )
+
+
+def _declared_extensions(document: dict[str, Any]) -> list[str]:
+    # Accept whichever extensions the template declares; openjd-model still rejects
+    # names it does not know. Reading them from the template rather than from
+    # openjd-model's extension enum keeps this working across openjd-model versions.
+    extensions = document.get("extensions")
+    return list(extensions) if isinstance(extensions, list) else []
+
+
+def _parameter_value(name: str, value: Any) -> ParameterValue:
+    """Convert a CreateJob JobParameter such as ``{"int": "3"}``; raises ValueError."""
+    if not isinstance(value, dict) or len(value) != 1:
+        raise ValueError(
+            f"Parameter {name} must have exactly one of {sorted(_PARAMETER_VALUE_TYPES)}"
+        )
+    ((kind, raw),) = value.items()
+    if kind not in _PARAMETER_VALUE_TYPES:
+        raise ValueError(f"Parameter {name} has unknown value type {kind!r}")
+    return ParameterValue(type=_PARAMETER_VALUE_TYPES[kind], value=str(raw))
+
+
 class MockDeadlineBackend:
     """In-memory resources and observability for the mock service."""
 
@@ -76,6 +126,10 @@ class MockDeadlineBackend:
         self.queues: dict[tuple[str, str], dict[str, Any]] = {}
         self.queue_environments: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.storage_profiles: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        # Created by CreateJob, keyed by (farm ID, queue ID, job ID). Each entry holds
+        # the full CreateJob request (template, parameters, ...) plus the fields the
+        # service assigns, so tests can assert on exactly what was submitted.
+        self.jobs: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.call_counts: dict[str, int] = {}
         self.request_log: list[tuple[str, str, str]] = []
         self.unmatched_requests: list[tuple[str, str]] = []
@@ -90,11 +144,12 @@ class MockDeadlineBackend:
         return self.scenario.queue_id
 
     def reset(self) -> None:
-        """Restore scenario resources and clear request observability."""
+        """Restore scenario resources, discard created jobs, and clear request observability."""
         with self._lock:
             self.call_counts.clear()
             self.request_log.clear()
             self.unmatched_requests.clear()
+            self.jobs.clear()
             self.scenario.seed(self)
 
     def snapshot(self) -> dict[str, Any]:
@@ -121,6 +176,7 @@ class MockDeadlineBackend:
                         for profiles in self.storage_profiles.values()
                         for profile in profiles
                     ],
+                    "jobs": list(self.jobs.values()),
                 },
             }
 
@@ -221,6 +277,101 @@ class MockDeadlineBackend:
             if environment.get("queueEnvironmentId") == queueEnvironmentId:
                 return dict(environment)
         raise _resource_not_found("queueEnvironment", queueEnvironmentId, "GetQueueEnvironment")
+
+    def _job_name(
+        self,
+        key: tuple[str, str],
+        template: str,
+        template_type: str | None,
+        parameters: dict[str, Any],
+    ) -> str:
+        """Return the job's name, first validating the submission when the scenario asks.
+
+        Validation mirrors the service: the template must decode as an Open Job
+        Description job template, and the parameter values must be accepted by it
+        together with the queue's environment templates (which define parameters
+        such as CondaPackages).
+        """
+        validate = self.scenario.validate_job_templates
+        try:
+            document = _parse_document(template, template_type)
+            if not validate:
+                return str(document.get("name", ""))
+            job_template = decode_job_template(
+                template=document, supported_extensions=_declared_extensions(document)
+            )
+            environment_templates = []
+            for environment in self.queue_environments.get(key, ()):
+                if "template" not in environment:
+                    continue
+                environment_document = _parse_document(
+                    environment["template"], environment.get("templateType")
+                )
+                environment_templates.append(
+                    decode_environment_template(
+                        template=environment_document,
+                        supported_extensions=_declared_extensions(environment_document),
+                    )
+                )
+            job = create_job(
+                job_template=job_template,
+                job_parameter_values={
+                    name: _parameter_value(name, value) for name, value in parameters.items()
+                },
+                environment_templates=environment_templates,
+            )
+        except ValueError as error:
+            if not validate:
+                return ""
+            raise _validation_exception(
+                f"Invalid job template or parameters: {error}", "CreateJob"
+            ) from error
+        return job.name
+
+    @route("POST", "/farms/{farmId}/queues/{queueId}/jobs", "CreateJob")
+    def create_job(
+        self, *, farmId: str, queueId: str, priority: int, **kwargs: Any
+    ) -> dict[str, Any]:
+        key = self._queue_key(farmId, queueId, "CreateJob")
+        template = kwargs.get("template")
+        if template is None:
+            raise _validation_exception(
+                "The mock Deadline service only supports CreateJob with a template, "
+                "not sourceJobId.",
+                "CreateJob",
+            )
+        name = self._job_name(
+            key, template, kwargs.get("templateType"), kwargs.get("parameters") or {}
+        )
+        job_id = f"job-{uuid.uuid4().hex}"
+        job = {
+            **kwargs,
+            "farmId": farmId,
+            "queueId": queueId,
+            "jobId": job_id,
+            # GetJob requires a non-empty name; the job ID stands in when validation is
+            # off and the template has no readable name.
+            "name": kwargs.get("nameOverride") or name or job_id,
+            "priority": priority,
+            # Created instantly, so the client's wait for CREATE_COMPLETE ends on its
+            # first GetJob.
+            "lifecycleStatus": "CREATE_COMPLETE",
+            "lifecycleStatusMessage": "Job creation completed successfully",
+            "taskRunStatus": kwargs.get("targetTaskRunStatus") or "READY",
+            "createdAt": datetime.now(timezone.utc).isoformat(),
+            "createdBy": _FAKE_PRINCIPAL,
+        }
+        with self._lock:
+            self.jobs[(farmId, queueId, job_id)] = job
+        return {"jobId": job_id}
+
+    @route("GET", "/farms/{farmId}/queues/{queueId}/jobs/{jobId}", "GetJob")
+    def get_job(self, *, farmId: str, queueId: str, jobId: str) -> dict[str, Any]:
+        self._queue_key(farmId, queueId, "GetJob")
+        try:
+            return dict(self.jobs[(farmId, queueId, jobId)])
+        except KeyError:
+            raise _resource_not_found("job", jobId, "GetJob")
 
 
 def _json_default(value: Any) -> Any:
