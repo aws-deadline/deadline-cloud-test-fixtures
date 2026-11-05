@@ -66,6 +66,11 @@ export WORKER_POSIX_SHARED_GROUP
 # PEP 508 requirement specifier for the Worker agent package
 # If WORKER_AGENT_WHL_PATH is provided, this option is ignored
 export WORKER_AGENT_REQUIREMENT_SPECIFIER
+
+# Python that creates the worker agent's venv on POSIX workers, for example "python3.11"
+# On the EC2 Linux worker it must be an AL2023 package name; userdata installs it
+# Defaults to the system python3 (3.9 on AL2023 and macOS)
+export WORKER_PYTHON
     
 # The S3 URI for the "deadline" service model to use for the tests
 # Falls back to LOCAL_MODEL_PATH, then defaults to your locally installed service model

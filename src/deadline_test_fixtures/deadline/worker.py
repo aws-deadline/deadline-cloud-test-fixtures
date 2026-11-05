@@ -192,6 +192,12 @@ class DeadlineWorkerConfiguration:
     worker_env_var: dict[str, str] | None = None
     """Additional feature flag to configure for workers"""
 
+    worker_python: str | None = None
+    """Python that creates the worker agent's virtual environment on POSIX workers. None keeps
+    the system python3, which is 3.9 on AL2023 and on macOS. On the EC2 Linux worker this is an
+    AL2023 package name such as "python3.11", which userdata installs before building the venv.
+    On LocalMacWorker it is an interpreter already on the host. Windows workers ignore it."""
+
 
 @dataclass
 class EC2InstanceWorker(DeadlineWorker):
@@ -1271,6 +1277,7 @@ fi
             )
 
         configure_job_users = "\n".join(job_users_cmds)
+        python, install_python = self._venv_python()
 
         userdata = f"""#!/bin/bash
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
@@ -1291,12 +1298,28 @@ groupadd -f --system {self.configuration.job_user_group}
 {copy_s3_command}
 
 mkdir /opt/deadline
-python3 -m venv /opt/deadline/worker
+{install_python}
+{python} -m venv /opt/deadline/worker
 
 touch "{self.SIGNAL_USER_DATA_SUCCESSFUL_FILE_NAME}"
 """
 
         return userdata
+
+    # An AL2023 package whose name is also its interpreter command, e.g. python3.11. The value is
+    # written into userdata unquoted, so nothing else is accepted.
+    _AL2023_PYTHON_PACKAGE: ClassVar[re.Pattern[str]] = re.compile(r"python3\.\d+")
+
+    def _venv_python(self) -> tuple[str, str]:
+        """The interpreter that builds the worker venv, and the userdata line that installs it."""
+        selected = self.configuration.worker_python
+        if selected is None:
+            return "python3", ""
+        if not self._AL2023_PYTHON_PACKAGE.fullmatch(selected):
+            raise ValueError(
+                f"worker_python must be an AL2023 Python package such as 'python3.11', got {selected!r}"
+            )
+        return selected, f"dnf install -y {selected}"
 
     def ami_ssm_param_name(self) -> str:
         # Grab the latest AL2023 AMI
@@ -1684,10 +1707,10 @@ class LocalMacWorker(DeadlineWorker):
             " && ".join(
                 [
                     f"mkdir -p {self.venv_path}",
-                    # The system Python, not the test process's interpreter: the
+                    # The system Python by default, not the test process's interpreter: the
                     # agent daemon outlives this process and must not depend on
                     # an interpreter that goes away with it.
-                    f"/usr/bin/python3 -m venv {self.venv_path}",
+                    f"{shlex.quote(self.configuration.worker_python or '/usr/bin/python3')} -m venv {self.venv_path}",
                     # install_command_for_linux invokes bare `pip`, so the venv
                     # must be active for it to install there.
                     f"source {self.venv_path}/bin/activate",
