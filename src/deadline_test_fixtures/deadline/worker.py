@@ -193,10 +193,11 @@ class DeadlineWorkerConfiguration:
     """Additional feature flag to configure for workers"""
 
     worker_python: str | None = None
-    """Python that creates the worker agent's virtual environment on POSIX workers. None keeps
-    the system python3, which is 3.9 on AL2023 and on macOS. On the EC2 Linux worker this is an
-    AL2023 package name such as "python3.11", which userdata installs before building the venv.
-    On LocalMacWorker it is an interpreter already on the host. Windows workers ignore it."""
+    """Python that creates the worker agent's virtual environment on PosixInstanceBuildWorker and
+    LocalMacWorker. None keeps the system python3, which is 3.9 on AL2023 and on macOS. On the EC2
+    Linux worker this is an AL2023 package name such as "python3.11", which userdata installs
+    before building the venv. On LocalMacWorker it is an interpreter already on the host.
+    Windows workers and DockerContainerWorker ignore it."""
 
 
 @dataclass
