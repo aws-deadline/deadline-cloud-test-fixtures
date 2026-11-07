@@ -195,7 +195,7 @@ class DeadlineWorkerConfiguration:
     worker_python: str | None = None
     """Python that runs the worker agent. None keeps each worker's default: the system python3
     (3.9) on AL2023 and macOS, and CPython 3.13.15 on Windows. On the EC2 Linux worker this is an
-    AL2023 package name such as "python3.11", which userdata installs before building the venv. On
+    AL2023 package name such as "python3.14", which userdata installs before building the venv. On
     LocalMacWorker it is an interpreter already on the host. On WindowsInstanceBuildWorker it is a
     CPython version from WindowsInstanceBuildWorker.PYTHON_INSTALLERS, such as "3.14.10".
     DockerContainerWorker ignores it."""
