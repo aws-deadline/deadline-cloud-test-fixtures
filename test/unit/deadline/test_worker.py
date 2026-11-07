@@ -203,6 +203,38 @@ class TestPosixInstanceBuildWorker:
         mock_setup_worker_agent.assert_called_once()
         mock_wait_until_userdata_finishes.assert_called_once()
 
+    def test_userdata_builds_venv_with_system_python_by_default(
+        self, worker: PosixInstanceBuildWorker
+    ) -> None:
+        userdata = worker.userdata(None)
+
+        assert "\npython3 -m venv /opt/deadline/worker\n" in userdata
+        assert "dnf install" not in userdata
+
+    def test_userdata_installs_selected_python_before_building_venv(
+        self, worker: PosixInstanceBuildWorker
+    ) -> None:
+        worker.configuration = dataclasses.replace(worker.configuration, worker_python="python3.11")
+
+        lines = worker.userdata(None).splitlines()
+
+        install = lines.index("dnf install -y python3.11")
+        venv = lines.index("python3.11 -m venv /opt/deadline/worker")
+        assert install < venv
+        assert "python3 -m venv /opt/deadline/worker" not in lines
+
+    @pytest.mark.parametrize(
+        "selected",
+        ["python3", "/usr/bin/python3.11", "python3.11; touch /tmp/x", "python3.11 python3.12"],
+    )
+    def test_userdata_rejects_python_that_is_not_an_al2023_package(
+        self, worker: PosixInstanceBuildWorker, selected: str
+    ) -> None:
+        worker.configuration = dataclasses.replace(worker.configuration, worker_python=selected)
+
+        with pytest.raises(ValueError, match="AL2023 Python package"):
+            worker.userdata(None)
+
     @patch.object(mod, "open", mock_open(read_data=b"mock data"))
     def test_start_userdata_successful(self, worker: PosixInstanceBuildWorker) -> None:
         # GIVEN
@@ -1349,6 +1381,44 @@ class TestSessionRuntimePassthrough:
         with pytest.raises(ValueError, match="Invalid session_runtime"):
             posix_worker.configure_worker_command(config_invalid)
 
+    def test_windows_userdata_installs_default_python(
+        self, windows_worker: WindowsInstanceBuildWorker
+    ) -> None:
+        userdata = windows_worker.userdata(None)
+
+        assert "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe" in userdata
+        assert '-Algorithm "MD5"' in userdata
+        assert '$expectedHash="d5e619c326a76cc19d8d897b79753c3b"' in userdata
+
+    def test_windows_userdata_installs_selected_python(
+        self, windows_worker: WindowsInstanceBuildWorker
+    ) -> None:
+        windows_worker.configuration = dataclasses.replace(
+            windows_worker.configuration, worker_python="3.14.10"
+        )
+
+        userdata = windows_worker.userdata(None)
+
+        assert "https://www.python.org/ftp/python/3.14.10/python-3.14.10-amd64.exe" in userdata
+        assert 'Start-Process -FilePath "C:\\python-3.14.10-amd64.exe"' in userdata
+        assert '-Algorithm "SHA256"' in userdata
+        assert (
+            '$expectedHash="92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965"'
+            in userdata
+        )
+        assert "3.13.15" not in userdata
+
+    @pytest.mark.parametrize("selected", ["3.14.9", "python3.14", "3.14.10; calc.exe"])
+    def test_windows_userdata_rejects_python_without_a_known_installer(
+        self, windows_worker: WindowsInstanceBuildWorker, selected: str
+    ) -> None:
+        windows_worker.configuration = dataclasses.replace(
+            windows_worker.configuration, worker_python=selected
+        )
+
+        with pytest.raises(ValueError, match="worker_python must be one of"):
+            windows_worker.userdata(None)
+
 
 class TestLocalMacWorker:
     """Covers the host-sharing hazards specific to running the agent on the test host.
@@ -1381,6 +1451,36 @@ class TestLocalMacWorker:
     @staticmethod
     def _commands(send_command: MagicMock) -> list[str]:
         return [c.args[0] if c.args else c.kwargs["command"] for c in send_command.call_args_list]
+
+    def test_install_agent_builds_venv_with_system_python_by_default(self, mac_worker: Any) -> None:
+        with patch.object(mac_worker, "_run") as run:
+            mac_worker._install_agent()
+
+        command = run.call_args.args[1]
+        assert f"/usr/bin/python3 -m venv {mac_worker.venv_path}" in command
+
+    def test_install_agent_builds_venv_with_selected_python(self, mac_worker: Any) -> None:
+        selected = "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
+        mac_worker.configuration = dataclasses.replace(
+            mac_worker.configuration, worker_python=selected
+        )
+        with patch.object(mac_worker, "_run") as run:
+            mac_worker._install_agent()
+
+        command = run.call_args.args[1]
+        assert f"{selected} -m venv {mac_worker.venv_path}" in command
+        assert "/usr/bin/python3 -m venv" not in command
+
+    def test_install_agent_quotes_selected_python(self, mac_worker: Any) -> None:
+        mac_worker.configuration = dataclasses.replace(
+            mac_worker.configuration, worker_python="/opt/my python/bin/python3"
+        )
+        with patch.object(mac_worker, "_run") as run:
+            mac_worker._install_agent()
+
+        assert (
+            f"'/opt/my python/bin/python3' -m venv {mac_worker.venv_path}" in run.call_args.args[1]
+        )
 
     def test_installer_runs_before_job_users_are_created(self, mac_worker: Any) -> None:
         """The installer creates the shared job group that the job users are added to."""

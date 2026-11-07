@@ -459,6 +459,10 @@ def worker_config(
         WORKER_AGENT_WHL_PATH: Path to the Worker agent wheel file to use.
         WORKER_AGENT_REQUIREMENT_SPECIFIER: PEP 508 requirement specifier for the Worker agent package.
             If WORKER_AGENT_WHL_PATH is provided, this option is ignored.
+        WORKER_PYTHON: Python that runs the worker agent: an AL2023 package such as "python3.14"
+            on the EC2 Linux worker, an interpreter path on the local macOS worker, or a version
+            such as "3.14.10" on the EC2 Windows worker. Unset keeps each worker's default. The
+            Docker worker ignores it. See DeadlineWorkerConfiguration.worker_python.
         LOCAL_MODEL_PATH: Path to a local Deadline model file to use for API calls.
             If DEADLINE_SERVICE_MODEL_S3_URI was provided, this option is ignored.
 
@@ -535,6 +539,7 @@ def worker_config(
             ),
             service_model_path=dst_path,
             file_mappings=file_mappings or None,
+            worker_python=os.getenv("WORKER_PYTHON") or None,
         )
 
 
