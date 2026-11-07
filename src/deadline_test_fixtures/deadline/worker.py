@@ -193,11 +193,12 @@ class DeadlineWorkerConfiguration:
     """Additional feature flag to configure for workers"""
 
     worker_python: str | None = None
-    """Python that creates the worker agent's virtual environment on PosixInstanceBuildWorker and
-    LocalMacWorker. None keeps the system python3, which is 3.9 on AL2023 and on macOS. On the EC2
-    Linux worker this is an AL2023 package name such as "python3.11", which userdata installs
-    before building the venv. On LocalMacWorker it is an interpreter already on the host.
-    Windows workers and DockerContainerWorker ignore it."""
+    """Python that runs the worker agent. None keeps each worker's default: the system python3
+    (3.9) on AL2023 and macOS, and CPython 3.13.15 on Windows. On the EC2 Linux worker this is an
+    AL2023 package name such as "python3.11", which userdata installs before building the venv. On
+    LocalMacWorker it is an interpreter already on the host. On WindowsInstanceBuildWorker it is a
+    CPython version from WindowsInstanceBuildWorker.PYTHON_INSTALLERS, such as "3.14.10".
+    DockerContainerWorker ignores it."""
 
 
 @dataclass
@@ -879,6 +880,15 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
     Any commands must be written in Powershell.
     """
 
+    DEFAULT_PYTHON_VERSION: ClassVar[str] = "3.13.15"
+
+    # The python.org installers userdata may download, keyed by version, with the hash it checks.
+    # Only listed versions are accepted, so a selection can never skip the verification.
+    PYTHON_INSTALLERS: ClassVar[dict[str, tuple[str, str]]] = {
+        "3.13.15": ("MD5", "d5e619c326a76cc19d8d897b79753c3b"),
+        "3.14.10": ("SHA256", "92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965"),
+    }
+
     WIN2022_AMI_NAME: ClassVar[str] = "Windows_Server-2022-English-Full-Base"
 
     def configure_worker_command(self, *, config: DeadlineWorkerConfiguration) -> str:
@@ -982,6 +992,15 @@ if (Test-Path "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}") {{
                 )
 
         configure_job_users = "\n".join(job_users_cmds)
+        python_version = self.configuration.worker_python or self.DEFAULT_PYTHON_VERSION
+        try:
+            hash_algorithm, expected_hash = self.PYTHON_INSTALLERS[python_version]
+        except KeyError:
+            raise ValueError(
+                f"worker_python must be one of {sorted(self.PYTHON_INSTALLERS)} on Windows, "
+                f"got {python_version!r}"
+            ) from None
+        installer = f"python-{python_version}-amd64.exe"
 
         userdata = f"""<powershell>
 $ErrorActionPreference = "Stop"
@@ -991,11 +1010,11 @@ $successDir="{self.SIGNAL_USER_DATA_DIR}"
 mkdir $successDir -Force
 try {{
     $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe" -OutFile "C:\\python-3.13.15-amd64.exe"
-    $installerHash=(Get-FileHash "C:\\python-3.13.15-amd64.exe" -Algorithm "MD5")
-    $expectedHash="d5e619c326a76cc19d8d897b79753c3b"
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/{python_version}/{installer}" -OutFile "C:\\{installer}"
+    $installerHash=(Get-FileHash "C:\\{installer}" -Algorithm "{hash_algorithm}")
+    $expectedHash="{expected_hash}"
     if ($installerHash.Hash -ne $expectedHash) {{ throw "Could not verify Python installer." }}
-    Start-Process -FilePath "C:\\python-3.13.15-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
+    Start-Process -FilePath "C:\\{installer}" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
     Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\\AWSCLIV2.msi"
     Start-Process msiexec.exe -ArgumentList "/i C:\\AWSCLIV2.msi /quiet" -Wait
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")

@@ -67,11 +67,13 @@ export WORKER_POSIX_SHARED_GROUP
 # If WORKER_AGENT_WHL_PATH is provided, this option is ignored
 export WORKER_AGENT_REQUIREMENT_SPECIFIER
 
-# Python that creates the worker agent's venv on the EC2 Linux and local macOS workers,
-# for example "python3.11"
-# On the EC2 Linux worker it must be an AL2023 package name; userdata installs it
-# Defaults to the system python3 (3.9 on AL2023 and macOS)
-# Windows and Docker workers ignore it
+# Python that runs the worker agent
+# EC2 Linux worker: an AL2023 package name such as "python3.14"; userdata installs it
+# Local macOS worker: the path of an interpreter already on the host
+# EC2 Windows worker: a CPython version such as "3.14.10" (see
+#   WindowsInstanceBuildWorker.PYTHON_INSTALLERS for the accepted versions)
+# Defaults to the system python3 (3.9) on AL2023 and macOS, and 3.13.15 on Windows
+# The Docker worker ignores it
 export WORKER_PYTHON
     
 # The S3 URI for the "deadline" service model to use for the tests
