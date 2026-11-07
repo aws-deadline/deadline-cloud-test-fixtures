@@ -1381,6 +1381,44 @@ class TestSessionRuntimePassthrough:
         with pytest.raises(ValueError, match="Invalid session_runtime"):
             posix_worker.configure_worker_command(config_invalid)
 
+    def test_windows_userdata_installs_default_python(
+        self, windows_worker: WindowsInstanceBuildWorker
+    ) -> None:
+        userdata = windows_worker.userdata(None)
+
+        assert "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe" in userdata
+        assert '-Algorithm "MD5"' in userdata
+        assert '$expectedHash="d5e619c326a76cc19d8d897b79753c3b"' in userdata
+
+    def test_windows_userdata_installs_selected_python(
+        self, windows_worker: WindowsInstanceBuildWorker
+    ) -> None:
+        windows_worker.configuration = dataclasses.replace(
+            windows_worker.configuration, worker_python="3.14.10"
+        )
+
+        userdata = windows_worker.userdata(None)
+
+        assert "https://www.python.org/ftp/python/3.14.10/python-3.14.10-amd64.exe" in userdata
+        assert 'Start-Process -FilePath "C:\\python-3.14.10-amd64.exe"' in userdata
+        assert '-Algorithm "SHA256"' in userdata
+        assert (
+            '$expectedHash="92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965"'
+            in userdata
+        )
+        assert "3.13.15" not in userdata
+
+    @pytest.mark.parametrize("selected", ["3.14.9", "python3.14", "3.14.10; calc.exe"])
+    def test_windows_userdata_rejects_python_without_a_known_installer(
+        self, windows_worker: WindowsInstanceBuildWorker, selected: str
+    ) -> None:
+        windows_worker.configuration = dataclasses.replace(
+            windows_worker.configuration, worker_python=selected
+        )
+
+        with pytest.raises(ValueError, match="worker_python must be one of"):
+            windows_worker.userdata(None)
+
 
 class TestLocalMacWorker:
     """Covers the host-sharing hazards specific to running the agent on the test host.
