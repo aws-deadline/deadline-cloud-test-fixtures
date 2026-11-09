@@ -5,8 +5,9 @@ from __future__ import annotations
 import functools
 import logging
 import random
+from collections.abc import Callable
 from time import sleep
-from typing import Any, Callable
+from typing import Any
 
 import botocore.exceptions
 

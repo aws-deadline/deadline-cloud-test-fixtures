@@ -159,7 +159,7 @@ class MockDeadlineServerProcess:
         self.base_url = None
         self.backend = None
 
-    # PYI034 wants `Self` here, which needs typing_extensions on Python 3.9. This
+    # PYI034 wants `Self` here, which needs typing_extensions before Python 3.11. This
     # class is concrete and not subclassed, so the concrete return type is accurate.
     def __enter__(self) -> MockDeadlineServerProcess:  # noqa: PYI034
         return self.start()

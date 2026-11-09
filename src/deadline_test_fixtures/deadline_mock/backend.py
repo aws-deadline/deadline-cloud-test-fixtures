@@ -11,10 +11,11 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import TCPServer
-from typing import Any, Callable, ClassVar
+from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 import botocore.session
