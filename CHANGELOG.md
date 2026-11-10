@@ -1,3 +1,9 @@
+## 0.18.26 (2026-11-10)
+
+### Features
+* You can now pick the Python that builds the worker agent's venv on POSIX workers by setting the new `WORKER_PYTHON` environment variable, which sets `DeadlineWorkerConfiguration.worker_python`. On the EC2 Linux worker the value is an AL2023 package name such as `python3.11`, which is installed with dnf. Use this to install worker agent versions that require Python 3.10 or later. (#353)
+* The Windows worker now installs the CPython version set in `worker_python`, including 3.14, instead of always installing 3.13.15. You can give a full version such as `3.14.10` or a minor line such as `3.14` for the newest release with a Windows installer. Invalid values are rejected before an instance is launched. (#355)
+* The mock Deadline service now supports `CreateJob` and `GetJob`, so submitter UI tests can press Submit and check the request that was sent. Like the real service, `CreateJob` rejects invalid Open Job Description templates and parameter values; set `validate_job_templates=False` to turn this check off. The new `MockDeadlineScenario.without_job_attachments()` serves a queue without job attachments, so submission skips S3 uploads. (#352)
 ## 0.18.25 (2026-11-02)
 
 ### Bug Fixes
