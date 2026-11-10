@@ -15,6 +15,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import InitVar, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -48,6 +50,67 @@ DEFAULT_WAITER_CONFIG = {
 }
 
 _VALID_SESSION_RUNTIMES = ("python", "rust", "service-selected")
+
+
+# What WindowsInstanceBuildWorker accepts as worker_python: "3.14" for the newest 3.14 release
+# with a Windows installer, or an exact release such as "3.14.10".
+_WINDOWS_PYTHON_VERSION = re.compile(r"3\.\d+(?:\.\d+)?")
+_PYTHON_ORG_DOWNLOADS_API = "https://www.python.org/api/v2/downloads"
+_HASH_ALGORITHM_BY_LENGTH = {64: "SHA256", 32: "MD5"}
+
+
+def _python_org_get(path: str) -> Any:
+    url = f"{_PYTHON_ORG_DOWNLOADS_API}/{path}"
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            return json.load(response)
+    except OSError as e:
+        raise RuntimeError(f"Could not query the python.org downloads API at {url}: {e}") from e
+
+
+def _python_org_windows_installer_hash(
+    release: dict[str, Any], version: str
+) -> tuple[str, str] | None:
+    """The (algorithm, hash) python.org publishes for a release's amd64 installer, or None if the
+    release has no such installer. SHA256 is preferred; older releases publish only MD5."""
+    release_id = str(release["resource_uri"]).rstrip("/").rsplit("/", 1)[-1]
+    installer_url = f"https://www.python.org/ftp/python/{version}/python-{version}-amd64.exe"
+    for release_file in _python_org_get(f"release_file/?release={urllib.parse.quote(release_id)}"):
+        if release_file.get("url") != installer_url:
+            continue
+        for key in ("sha256_sum", "md5_sum"):
+            value = str(release_file.get(key) or "").lower()
+            if re.fullmatch(r"[0-9a-f]+", value) and len(value) in _HASH_ALGORITHM_BY_LENGTH:
+                return _HASH_ALGORITHM_BY_LENGTH[len(value)], value
+        raise RuntimeError(f"python.org publishes no usable hash for {installer_url}")
+    return None
+
+
+def _resolve_windows_python(selected: str) -> tuple[str, str, str]:
+    """(version, hash algorithm, hash) for the python.org amd64 installer of `selected`, which is
+    either an exact release ("3.14.10") or a minor line ("3.14") meaning its newest release that
+    has a Windows installer. Security-only releases of older lines are source-only, so for example
+    "3.10" resolves to 3.10.11."""
+    if selected.count(".") == 2:
+        candidates = _python_org_get(
+            f"release/?name={urllib.parse.quote(f'Python {selected}')}&is_published=true"
+        )
+    else:
+        pattern = re.compile(rf"Python {re.escape(selected)}\.\d+")
+        candidates = [
+            release
+            for release in _python_org_get("release/?is_published=true")
+            if pattern.fullmatch(str(release.get("name", ""))) and not release.get("pre_release")
+        ]
+        candidates.sort(key=lambda r: int(str(r["name"]).rsplit(".", 1)[1]), reverse=True)
+    for release in candidates:
+        version = str(release["name"]).removeprefix("Python ")
+        if not re.fullmatch(r"3\.\d+\.\d+", version):
+            continue
+        found = _python_org_windows_installer_hash(release, version)
+        if found is not None:
+            return version, *found
+    raise ValueError(f"python.org has no Windows amd64 installer for Python {selected}")
 
 
 def _validate_session_runtime(value: str) -> None:
@@ -193,11 +256,13 @@ class DeadlineWorkerConfiguration:
     """Additional feature flag to configure for workers"""
 
     worker_python: str | None = None
-    """Python that creates the worker agent's virtual environment on PosixInstanceBuildWorker and
-    LocalMacWorker. None keeps the system python3, which is 3.9 on AL2023 and on macOS. On the EC2
-    Linux worker this is an AL2023 package name such as "python3.11", which userdata installs
-    before building the venv. On LocalMacWorker it is an interpreter already on the host.
-    Windows workers and DockerContainerWorker ignore it."""
+    """Python that runs the worker agent. None keeps each worker's default: the system python3
+    (3.9) on AL2023 and macOS, and CPython 3.13.15 on Windows. On the EC2 Linux worker this is an
+    AL2023 package name such as "python3.14", which userdata installs before building the venv. On
+    LocalMacWorker it is an interpreter already on the host. On WindowsInstanceBuildWorker it is a
+    CPython version, "3.14.10" for that release or "3.14" for the newest 3.14 release with a
+    Windows installer, which userdata downloads from python.org and verifies by hash.
+    DockerContainerWorker ignores it."""
 
 
 @dataclass
@@ -879,7 +944,39 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
     Any commands must be written in Powershell.
     """
 
+    DEFAULT_PYTHON_VERSION: ClassVar[str] = "3.13.15"
+
+    # Reviewed SHA256s of python.org Windows installers. These versions install without asking
+    # python.org for the hash; any other version takes the hash python.org's API publishes, which
+    # comes from the same site as the installer. 3.10 to 3.12 are the last releases of those lines
+    # that python.org built Windows installers for.
+    PYTHON_INSTALLERS: ClassVar[dict[str, str]] = {
+        "3.10.11": "d8dede5005564b408ba50317108b765ed9c3c510342a598f9fd42681cbe0648b",
+        "3.11.9": "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
+        "3.12.10": "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb",
+        "3.13.15": "edec09c4853aeae9ac36efb8c9f95b6b8e2fee65eee56d9767a8b7c69c574403",
+        "3.13.17": "5da012101ba2e17113a9a1cd901e9ce1441086f2b7ecb5de06ec94163899a190",
+        "3.14.10": "92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965",
+        "3.15.2": "06e225a228191b0f4d1dcf6905fbb21bf9f6970d13a2ec63137ab9bee76f15aa",
+    }
+
     WIN2022_AMI_NAME: ClassVar[str] = "Windows_Server-2022-English-Full-Base"
+
+    def _python_installer(self) -> tuple[str, str, str]:
+        """The CPython version userdata installs, with the hash algorithm and hash it checks."""
+        selected = self.configuration.worker_python or self.DEFAULT_PYTHON_VERSION
+        if not _WINDOWS_PYTHON_VERSION.fullmatch(selected):
+            raise ValueError(
+                f"worker_python must be a CPython version such as '3.14' or '3.14.10' on Windows, "
+                f"got {selected!r}"
+            )
+        if selected in self.PYTHON_INSTALLERS:
+            return selected, "SHA256", self.PYTHON_INSTALLERS[selected]
+        version, algorithm, digest = _resolve_windows_python(selected)
+        if version in self.PYTHON_INSTALLERS:
+            return version, "SHA256", self.PYTHON_INSTALLERS[version]
+        LOG.info(f"Installing Python {version} on Windows, verified with python.org's {algorithm}")
+        return version, algorithm, digest
 
     def configure_worker_command(self, *, config: DeadlineWorkerConfiguration) -> str:
         """Get the command to configure the Worker. This must be run as Administrator."""
@@ -982,6 +1079,8 @@ if (Test-Path "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}") {{
                 )
 
         configure_job_users = "\n".join(job_users_cmds)
+        python_version, hash_algorithm, expected_hash = self._python_installer()
+        installer = f"python-{python_version}-amd64.exe"
 
         userdata = f"""<powershell>
 $ErrorActionPreference = "Stop"
@@ -991,11 +1090,11 @@ $successDir="{self.SIGNAL_USER_DATA_DIR}"
 mkdir $successDir -Force
 try {{
     $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe" -OutFile "C:\\python-3.13.15-amd64.exe"
-    $installerHash=(Get-FileHash "C:\\python-3.13.15-amd64.exe" -Algorithm "MD5")
-    $expectedHash="d5e619c326a76cc19d8d897b79753c3b"
+    Invoke-WebRequest -Uri "https://www.python.org/ftp/python/{python_version}/{installer}" -OutFile "C:\\{installer}"
+    $installerHash=(Get-FileHash "C:\\{installer}" -Algorithm "{hash_algorithm}")
+    $expectedHash="{expected_hash}"
     if ($installerHash.Hash -ne $expectedHash) {{ throw "Could not verify Python installer." }}
-    Start-Process -FilePath "C:\\python-3.13.15-amd64.exe" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
+    Start-Process -FilePath "C:\\{installer}" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait
     Invoke-WebRequest -Uri "https://awscli.amazonaws.com/AWSCLIV2.msi" -Outfile "C:\\AWSCLIV2.msi"
     Start-Process msiexec.exe -ArgumentList "/i C:\\AWSCLIV2.msi /quiet" -Wait
     $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine")
