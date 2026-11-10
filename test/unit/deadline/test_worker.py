@@ -1428,18 +1428,163 @@ class TestSessionRuntimePassthrough:
         expected_hash = WindowsInstanceBuildWorker.PYTHON_INSTALLERS[selected]
         assert f'$expectedHash="{expected_hash}"' in userdata
 
+    def test_windows_userdata_uses_pinned_hash_without_asking_python_org(
+        self, windows_worker: WindowsInstanceBuildWorker
+    ) -> None:
+        windows_worker.configuration = dataclasses.replace(
+            windows_worker.configuration, worker_python="3.14.10"
+        )
+
+        with patch.object(mod, "_python_org_get", side_effect=AssertionError("no lookup")):
+            userdata = windows_worker.userdata(None)
+
+        assert "python-3.14.10-amd64.exe" in userdata
+
     @pytest.mark.parametrize(
-        "selected", ["3.14.9", "3.9.13", "3.16.0", "python3.14", "3.14.10; calc.exe"]
+        "selected", ["python3.14", "3.14.10; calc.exe", "3", "3.14.10.1", "4.0", " 3.14"]
     )
-    def test_windows_userdata_rejects_python_without_a_known_installer(
+    def test_windows_userdata_rejects_python_that_is_not_a_version(
         self, windows_worker: WindowsInstanceBuildWorker, selected: str
     ) -> None:
         windows_worker.configuration = dataclasses.replace(
             windows_worker.configuration, worker_python=selected
         )
 
-        with pytest.raises(ValueError, match="worker_python must be one of"):
+        no_lookup = patch.object(mod, "_python_org_get", side_effect=AssertionError("no lookup"))
+        with no_lookup, pytest.raises(ValueError, match="must be a CPython version"):
             windows_worker.userdata(None)
+
+
+def _python_org_release(version: str, release_id: int) -> dict[str, Any]:
+    return {
+        "name": f"Python {version}",
+        "resource_uri": f"https://www.python.org/api/v2/downloads/release/{release_id}/",
+        "pre_release": False,
+    }
+
+
+def _python_org_installer(version: str, sha256: str = "", md5: str = "") -> dict[str, Any]:
+    return {
+        "url": f"https://www.python.org/ftp/python/{version}/python-{version}-amd64.exe",
+        "sha256_sum": sha256,
+        "md5_sum": md5,
+    }
+
+
+class TestWindowsPythonResolution:
+    """WindowsInstanceBuildWorker resolves versions outside PYTHON_INSTALLERS through python.org."""
+
+    SHA = "a" * 64
+    MD5 = "b" * 32
+
+    @pytest.fixture
+    def windows_worker(self) -> WindowsInstanceBuildWorker:
+        # Resolution and userdata only read the configuration, so the AWS clients are never used.
+        return WindowsInstanceBuildWorker(
+            subnet_id="subnet-123",
+            security_group_id="sg-123",
+            instance_profile_name="profile",
+            bootstrap_bucket_name="bucket",
+            s3_client=MagicMock(),
+            ec2_client=MagicMock(),
+            ssm_client=MagicMock(),
+            deadline_client=MagicMock(),
+            configuration=DeadlineWorkerConfiguration(
+                farm_id="farm-123",
+                fleet=Fleet(id="fleet-123", farm=Farm(id="farm-123")),
+                region="us-west-2",
+                allow_shutdown=False,
+                worker_agent_install=PipInstall(
+                    requirement_specifiers=["deadline-cloud-worker-agent"]
+                ),
+            ),
+            instance_type="t3.micro",
+            instance_shutdown_behavior="terminate",
+        )
+
+    @pytest.fixture
+    def python_org(self) -> Generator[dict[str, Any], None, None]:
+        """A fake python.org downloads API: release listing plus per-release files."""
+        api: dict[str, Any] = {
+            "releases": [
+                _python_org_release("3.10.19", 1),
+                _python_org_release("3.10.11", 2),
+                _python_org_release("3.10.4", 3),
+                _python_org_release("3.14.11", 4),
+                {**_python_org_release("3.14.12", 5), "pre_release": True},
+                _python_org_release("3.13.18", 6),
+            ],
+            "files": {
+                "1": [],  # security-only release: source tarballs only
+                "2": [_python_org_installer("3.10.11", sha256=self.SHA)],
+                "3": [_python_org_installer("3.10.4", md5=self.MD5)],
+                "4": [_python_org_installer("3.14.11", sha256=self.SHA)],
+                "5": [_python_org_installer("3.14.12", sha256=self.SHA)],
+                "6": [_python_org_installer("3.13.18")],
+            },
+        }
+
+        def get(path: str) -> Any:
+            if path.startswith("release_file/?release="):
+                return api["files"][path.split("=", 1)[1]]
+            releases = api["releases"]
+            if "name=" in path:
+                name = path.split("name=", 1)[1].split("&", 1)[0].replace("%20", " ")
+                return [r for r in releases if r["name"] == name]
+            return releases
+
+        with patch.object(mod, "_python_org_get", side_effect=get):
+            yield api
+
+    def _installer(self, worker: Any, selected: str) -> tuple[str, str, str]:
+        worker.configuration = dataclasses.replace(worker.configuration, worker_python=selected)
+        return worker._python_installer()
+
+    def test_minor_line_resolves_to_newest_release_with_an_installer(
+        self, python_org: dict[str, Any], windows_worker: Any
+    ) -> None:
+        # 3.10.19 is source-only, so the newest installable 3.10 is the pinned 3.10.11.
+        assert self._installer(windows_worker, "3.10") == (
+            "3.10.11",
+            "SHA256",
+            WindowsInstanceBuildWorker.PYTHON_INSTALLERS["3.10.11"],
+        )
+
+    def test_minor_line_skips_pre_releases(
+        self, python_org: dict[str, Any], windows_worker: Any
+    ) -> None:
+        assert self._installer(windows_worker, "3.14") == ("3.14.11", "SHA256", self.SHA)
+
+    def test_unpinned_exact_release_uses_python_org_sha256(
+        self, python_org: dict[str, Any], windows_worker: Any
+    ) -> None:
+        assert self._installer(windows_worker, "3.14.11") == ("3.14.11", "SHA256", self.SHA)
+
+    def test_release_with_only_md5_is_verified_with_md5(
+        self, python_org: dict[str, Any], windows_worker: Any
+    ) -> None:
+        windows_worker.configuration = dataclasses.replace(
+            windows_worker.configuration, worker_python="3.10.4"
+        )
+
+        userdata = windows_worker.userdata(None)
+
+        assert "https://www.python.org/ftp/python/3.10.4/python-3.10.4-amd64.exe" in userdata
+        assert '-Algorithm "MD5"' in userdata
+        assert f'$expectedHash="{self.MD5}"' in userdata
+
+    @pytest.mark.parametrize("selected", ["3.16", "3.16.0", "3.10.19"])
+    def test_version_without_a_windows_installer_is_rejected(
+        self, python_org: dict[str, Any], windows_worker: Any, selected: str
+    ) -> None:
+        with pytest.raises(ValueError, match="has no Windows amd64 installer"):
+            self._installer(windows_worker, selected)
+
+    def test_installer_without_a_published_hash_is_rejected(
+        self, python_org: dict[str, Any], windows_worker: Any
+    ) -> None:
+        with pytest.raises(RuntimeError, match="no usable hash"):
+            self._installer(windows_worker, "3.13.18")
 
 
 class TestLocalMacWorker:

@@ -70,8 +70,8 @@ export WORKER_AGENT_REQUIREMENT_SPECIFIER
 # Python that runs the worker agent
 # EC2 Linux worker: an AL2023 package name such as "python3.14"; userdata installs it
 # Local macOS worker: the path of an interpreter already on the host
-# EC2 Windows worker: a CPython version such as "3.14.10" (see
-#   WindowsInstanceBuildWorker.PYTHON_INSTALLERS for the accepted versions)
+# EC2 Windows worker: a CPython version, "3.14.10" or "3.14" for the newest 3.14 release with a
+#   Windows installer; userdata installs it from python.org and verifies its hash
 # Defaults to the system python3 (3.9) on AL2023 and macOS, and 3.13.15 on Windows
 # The Docker worker ignores it
 export WORKER_PYTHON
