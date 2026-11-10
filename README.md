@@ -206,7 +206,7 @@ hatch run all:test
 
 This library requires:
 
-1. Python 3.9 or higher; and
+1. Python 3.10 or higher; and
 2. Linux, MacOS, or Windows operating system.
 
 ## Versioning
