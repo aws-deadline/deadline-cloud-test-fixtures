@@ -882,11 +882,17 @@ class WindowsInstanceBuildWorker(WindowsInstanceWorkerBase):
 
     DEFAULT_PYTHON_VERSION: ClassVar[str] = "3.13.15"
 
-    # The python.org installers userdata may download, keyed by version, with the hash it checks.
-    # Only listed versions are accepted, so a selection can never skip the verification.
-    PYTHON_INSTALLERS: ClassVar[dict[str, tuple[str, str]]] = {
-        "3.13.15": ("MD5", "d5e619c326a76cc19d8d897b79753c3b"),
-        "3.14.10": ("SHA256", "92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965"),
+    # The SHA256 of each python.org Windows installer userdata may download. Only listed versions
+    # are accepted, so a selection can never skip the verification. 3.10 to 3.12 are the last
+    # releases of those lines that python.org built Windows installers for.
+    PYTHON_INSTALLERS: ClassVar[dict[str, str]] = {
+        "3.10.11": "d8dede5005564b408ba50317108b765ed9c3c510342a598f9fd42681cbe0648b",
+        "3.11.9": "5ee42c4eee1e6b4464bb23722f90b45303f79442df63083f05322f1785f5fdde",
+        "3.12.10": "67b5635e80ea51072b87941312d00ec8927c4db9ba18938f7ad2d27b328b95fb",
+        "3.13.15": "edec09c4853aeae9ac36efb8c9f95b6b8e2fee65eee56d9767a8b7c69c574403",
+        "3.13.17": "5da012101ba2e17113a9a1cd901e9ce1441086f2b7ecb5de06ec94163899a190",
+        "3.14.10": "92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965",
+        "3.15.2": "06e225a228191b0f4d1dcf6905fbb21bf9f6970d13a2ec63137ab9bee76f15aa",
     }
 
     WIN2022_AMI_NAME: ClassVar[str] = "Windows_Server-2022-English-Full-Base"
@@ -994,7 +1000,7 @@ if (Test-Path "{self.SIGNAL_USER_DATA_FAILED_FILE_NAME}") {{
         configure_job_users = "\n".join(job_users_cmds)
         python_version = self.configuration.worker_python or self.DEFAULT_PYTHON_VERSION
         try:
-            hash_algorithm, expected_hash = self.PYTHON_INSTALLERS[python_version]
+            expected_hash = self.PYTHON_INSTALLERS[python_version]
         except KeyError:
             raise ValueError(
                 f"worker_python must be one of {sorted(self.PYTHON_INSTALLERS)} on Windows, "
@@ -1011,7 +1017,7 @@ mkdir $successDir -Force
 try {{
     $ProgressPreference = 'SilentlyContinue'
     Invoke-WebRequest -Uri "https://www.python.org/ftp/python/{python_version}/{installer}" -OutFile "C:\\{installer}"
-    $installerHash=(Get-FileHash "C:\\{installer}" -Algorithm "{hash_algorithm}")
+    $installerHash=(Get-FileHash "C:\\{installer}" -Algorithm "SHA256")
     $expectedHash="{expected_hash}"
     if ($installerHash.Hash -ne $expectedHash) {{ throw "Could not verify Python installer." }}
     Start-Process -FilePath "C:\\{installer}" -ArgumentList "/quiet InstallAllUsers=1 PrependPath=1 AppendPath=1" -Wait

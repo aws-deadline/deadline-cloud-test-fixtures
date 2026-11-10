@@ -1387,8 +1387,11 @@ class TestSessionRuntimePassthrough:
         userdata = windows_worker.userdata(None)
 
         assert "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe" in userdata
-        assert '-Algorithm "MD5"' in userdata
-        assert '$expectedHash="d5e619c326a76cc19d8d897b79753c3b"' in userdata
+        assert '-Algorithm "SHA256"' in userdata
+        assert (
+            '$expectedHash="edec09c4853aeae9ac36efb8c9f95b6b8e2fee65eee56d9767a8b7c69c574403"'
+            in userdata
+        )
 
     def test_windows_userdata_installs_selected_python(
         self, windows_worker: WindowsInstanceBuildWorker
@@ -1408,7 +1411,26 @@ class TestSessionRuntimePassthrough:
         )
         assert "3.13.15" not in userdata
 
-    @pytest.mark.parametrize("selected", ["3.14.9", "python3.14", "3.14.10; calc.exe"])
+    @pytest.mark.parametrize(
+        "selected", ["3.10.11", "3.11.9", "3.12.10", "3.13.17", "3.14.10", "3.15.2"]
+    )
+    def test_windows_userdata_installs_each_listed_python(
+        self, windows_worker: WindowsInstanceBuildWorker, selected: str
+    ) -> None:
+        windows_worker.configuration = dataclasses.replace(
+            windows_worker.configuration, worker_python=selected
+        )
+
+        userdata = windows_worker.userdata(None)
+
+        installer = f"python-{selected}-amd64.exe"
+        assert f"https://www.python.org/ftp/python/{selected}/{installer}" in userdata
+        expected_hash = WindowsInstanceBuildWorker.PYTHON_INSTALLERS[selected]
+        assert f'$expectedHash="{expected_hash}"' in userdata
+
+    @pytest.mark.parametrize(
+        "selected", ["3.14.9", "3.9.13", "3.16.0", "python3.14", "3.14.10; calc.exe"]
+    )
     def test_windows_userdata_rejects_python_without_a_known_installer(
         self, windows_worker: WindowsInstanceBuildWorker, selected: str
     ) -> None:
