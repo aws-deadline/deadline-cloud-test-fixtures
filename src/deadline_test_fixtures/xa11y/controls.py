@@ -6,14 +6,14 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Callable, Union
+from collections.abc import Callable
 
 import xa11y
 
 WIDGET_TIMEOUT = 60.0
 TAB_SHARED = "Shared job settings"
 TAB_JOB_SPECIFIC = "Job-specific settings"
-ControlRoot = Union[xa11y.App, xa11y.Locator]
+ControlRoot = xa11y.App | xa11y.Locator
 
 
 def _observe_pause() -> None:

@@ -1,14 +1,10 @@
 coverage[toml] == 7.*
-pytest == 9.1.*; python_version > "3.9"
-pytest == 8.4.*; python_version <= "3.9"
+pytest == 9.1.*
 pytest-cov == 7.1.*
 pytest-timeout == 2.4.*
 pytest-xdist == 3.8.*
-black == 26.10.*; python_version > "3.9"
-black == 25.11.*; python_version <= "3.9"
-moto[cloudformation,s3] == 5.2.*; python_version > "3.9"
-moto[cloudformation,s3] == 5.1.*; python_version <= "3.9"
-mypy == 2.4.*; python_version > "3.9"
-mypy == 1.19.*; python_version <= "3.9"
+black == 26.10.*
+moto[cloudformation,s3] == 5.2.*
+mypy == 2.4.*
 types-PyYAML == 6.*
 ruff == 0.17.*

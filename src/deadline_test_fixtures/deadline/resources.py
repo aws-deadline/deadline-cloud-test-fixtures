@@ -6,11 +6,11 @@ import json
 import logging
 import re
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from dataclasses import asdict, dataclass, fields
 from datetime import timedelta
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Callable, Literal, Union
+from typing import TYPE_CHECKING, Any, Literal
 
 from botocore.client import BaseClient
 
@@ -1061,9 +1061,12 @@ class StringTaskParameterValue:
     string: str
 
 
-TaskParameterValue = Union[
-    FloatTaskParameterValue, IntTaskParameterValue, PathTaskParameterValue, StringTaskParameterValue
-]
+TaskParameterValue = (
+    FloatTaskParameterValue
+    | IntTaskParameterValue
+    | PathTaskParameterValue
+    | StringTaskParameterValue
+)
 
 
 @dataclass

@@ -5,13 +5,12 @@
 from __future__ import annotations
 
 import time
-from typing import Union
 
 import xa11y
 
 from .controls import is_checked
 
-SubmitterRoot = Union[xa11y.App, xa11y.Locator]
+SubmitterRoot = xa11y.App | xa11y.Locator
 SAVE_BUNDLE_AS = "Save bundle as"
 
 

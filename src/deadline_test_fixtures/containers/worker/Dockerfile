@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-FROM public.ecr.aws/docker/library/python:3.9-buster
+FROM public.ecr.aws/docker/library/python:3.14-bookworm
 
 ARG AGENT_USER=agentuser
 ARG JOB_USER=jobuser
